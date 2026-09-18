@@ -92,9 +92,23 @@ struct GameStateBufferPod {
     float reserved[14];
 };
 
-// Zero-Copy Ring Buffer & Physics Event Structure (48 bytes per event)
+// Unified Physics Event Types
+static constexpr uint32_t EVENT_TYPE_NONE = 0;
+static constexpr uint32_t EVENT_TYPE_CAR_BALL_HIT = 1;
+static constexpr uint32_t EVENT_TYPE_CAR_CAR_COLLISION = 2;
+static constexpr uint32_t EVENT_TYPE_BALL_WORLD_HIT = 3;
+static constexpr uint32_t EVENT_TYPE_BALL_GOALPOST_HIT = 4;
+static constexpr uint32_t EVENT_TYPE_CAR_ACTION = 5;
+static constexpr uint32_t EVENT_TYPE_CAR_SUPERSONIC_ENTER = 6;
+static constexpr uint32_t EVENT_TYPE_BOOST_PICKUP = 7;
+
+static constexpr uint32_t CAR_ACTION_SINGLE_JUMP = 1;
+static constexpr uint32_t CAR_ACTION_DOUBLE_JUMP = 2;
+static constexpr uint32_t CAR_ACTION_DODGE = 3;
+
+// Zero-Copy Ring Buffer & Physics Event Structure (Strictly 48 bytes per event, aligned to 4 bytes)
 struct PhysicsEvent {
-    uint32_t type;         // [Word 0] 1: CarBallHit, 2: BoostPickup, 3: CarDemo
+    uint32_t type;         // [Word 0] Event type (1..7)
     uint32_t tick;         // [Word 1] Physics tick timestamp
     float x, y, z;         // [Word 2, 3, 4] 3D world position in Unreal Units
 
@@ -109,6 +123,63 @@ struct PhysicsEvent {
             float normalZ;        // [Word 9] Contact normal Z
             float impulse;        // [Word 10] Applied extra impulse magnitude
         } carBall;
+
+        // type == 2 (CarCarCollision & Demo)
+        struct {
+            uint16_t car1Index;   // [Word 5, Low 16 bits] Attacker / Bumper car index
+            uint16_t car2Index;   // [Word 5, High 16 bits] Victim car index
+            uint16_t car1Team;    // [Word 6, Low 16 bits] Team (0: Blue, 1: Orange)
+            uint16_t car2Team;    // [Word 6, High 16 bits] Team (0: Blue, 1: Orange)
+            float relSpeed;       // [Word 7] Relative collision velocity
+            float impulse;        // [Word 8] Bump impulse magnitude
+            uint32_t isDemo;      // [Word 9] 1 if demo, 0 if bump
+            uint32_t reserved;    // [Word 10]
+        } carCar;
+
+        // type == 3 (BallWorldHit - Pitch impact)
+        struct {
+            float speed;          // [Word 5] Ball speed at impact
+            float normalX;        // [Word 6] Contact normal X
+            float normalY;        // [Word 7] Contact normal Y
+            float normalZ;        // [Word 8] Contact normal Z
+            uint32_t surfaceTag;  // [Word 9] 1: ground/pitch, 2: wall/ceiling
+            uint32_t reserved;    // [Word 10]
+        } ballWorld;
+
+        // type == 4 (BallGoalpostHit - Goalpost & crossbar)
+        struct {
+            float speed;          // [Word 5] Ball speed at impact
+            float normalX;        // [Word 6] Contact normal X
+            float normalY;        // [Word 7] Contact normal Y
+            float normalZ;        // [Word 8] Contact normal Z
+            uint32_t isCrossbar;  // [Word 9] 1: crossbar, 0: vertical post
+            uint32_t reserved;    // [Word 10]
+        } ballGoalpost;
+
+        // type == 5 (CarAction - Single Jump, Double Jump, Dodge)
+        struct {
+            uint16_t carIndex;    // [Word 5, Low 16 bits]
+            uint16_t team;        // [Word 5, High 16 bits]
+            uint32_t subType;     // [Word 6] 1: Single Jump, 2: Double Jump, 3: Dodge
+            float reserved[4];    // [Word 7..10]
+        } carAction;
+
+        // type == 6 (CarSupersonicEnter)
+        struct {
+            uint16_t carIndex;    // [Word 5, Low 16 bits]
+            uint16_t team;        // [Word 5, High 16 bits]
+            float speed;          // [Word 6] Entry speed
+            float reserved[4];    // [Word 7..10]
+        } supersonicEnter;
+
+        // type == 7 (BoostPickup)
+        struct {
+            uint16_t carIndex;    // [Word 5, Low 16 bits] Collector car index
+            uint16_t team;        // [Word 5, High 16 bits] Collector team
+            uint32_t padIndex;    // [Word 6] Boost pad index (0..33)
+            uint32_t isBig;       // [Word 7] 1: Big pad (100), 0: Small pad (12)
+            float reserved[3];    // [Word 8..10]
+        } boostPickup;
 
         float fParams[6];
         uint32_t uParams[6];
@@ -172,6 +243,7 @@ struct CarTracker {
     bool prevJumping = false;
     bool prevFlipping = false;
     bool prevDoubleJumped = false;
+    bool prevSupersonic = false;
     bool prevOnGround = true;
     bool prevHadFlipReset = false;
     uint64_t lastBallHitTick = 0;
@@ -179,10 +251,76 @@ struct CarTracker {
 };
 static CarTracker g_carTrackers[MAX_ARENA_CARS];
 
+// Boost pad and world impact tracking
+static bool g_prevPadActive[NUM_ARENA_PADS] = {};
+static uint64_t g_lastBallWorldHitTick = 0;
+
+static int getCarIndex(Car* car) {
+    if (!car) return -1;
+    for (size_t i = 0; i < g_cars.size(); i++) {
+        if (g_cars[i] == car) return static_cast<int>(i);
+    }
+    return -1;
+}
+
 // Goal score callback
 static void onGoalScoredCallback(Arena* arena, Team scoringTeam, void* userInfo) {
     g_goalScoredFlag = (scoringTeam == Team::BLUE) ? 1 : 2;
     g_state.header.goalScoredFlag = static_cast<float>(g_goalScoredFlag);
+}
+
+// Car-Car collision & Demo callback
+static void onCarBumpCallback(Arena* arena, Car* bumper, Car* victim, bool isDemo, const Vec& contactPos, float relSpeed, float impulse, void* userInfo) {
+    PhysicsEvent ev = {};
+    ev.type = EVENT_TYPE_CAR_CAR_COLLISION;
+    ev.tick = static_cast<uint32_t>(arena->tickCount > 0 ? arena->tickCount - 1 : 0);
+    ev.x = contactPos.x;
+    ev.y = contactPos.y;
+    ev.z = contactPos.z;
+
+    int bumperIdx = getCarIndex(bumper);
+    int victimIdx = getCarIndex(victim);
+    ev.carCar.car1Index = static_cast<uint16_t>(bumperIdx >= 0 ? bumperIdx : 0);
+    ev.carCar.car2Index = static_cast<uint16_t>(victimIdx >= 0 ? victimIdx : 0);
+    ev.carCar.car1Team = static_cast<uint16_t>((bumper && bumper->team == Team::ORANGE) ? 1 : 0);
+    ev.carCar.car2Team = static_cast<uint16_t>((victim && victim->team == Team::ORANGE) ? 1 : 0);
+    ev.carCar.relSpeed = relSpeed;
+    ev.carCar.impulse = impulse;
+    ev.carCar.isDemo = isDemo ? 1 : 0;
+    PushPhysicsEvent(ev);
+}
+
+// Ball-World & Goalpost collision callback
+static void onBallWorldCallback(Arena* arena, const Vec& contactPos, const Vec& normal, float speed, bool isGoalpost, void* userInfo) {
+    uint64_t curTick = arena->tickCount;
+    // Debounce successive contact frames (min 4 ticks ≈ 33ms) and ignore rolling/low speeds (<120 UU/s)
+    if (curTick <= g_lastBallWorldHitTick + 4 || speed < 120.0f) {
+        return;
+    }
+    g_lastBallWorldHitTick = curTick;
+
+    PhysicsEvent ev = {};
+    ev.type = isGoalpost ? EVENT_TYPE_BALL_GOALPOST_HIT : EVENT_TYPE_BALL_WORLD_HIT;
+    ev.tick = static_cast<uint32_t>(curTick > 0 ? curTick - 1 : 0);
+    ev.x = contactPos.x;
+    ev.y = contactPos.y;
+    ev.z = contactPos.z;
+
+    if (isGoalpost) {
+        ev.ballGoalpost.speed = speed;
+        ev.ballGoalpost.normalX = normal.x;
+        ev.ballGoalpost.normalY = normal.y;
+        ev.ballGoalpost.normalZ = normal.z;
+        bool isCrossbar = (std::abs(contactPos.z - 642.0f) < 80.0f) && (std::abs(contactPos.x) <= 950.0f);
+        ev.ballGoalpost.isCrossbar = isCrossbar ? 1 : 0;
+    } else {
+        ev.ballWorld.speed = speed;
+        ev.ballWorld.normalX = normal.x;
+        ev.ballWorld.normalY = normal.y;
+        ev.ballWorld.normalZ = normal.z;
+        ev.ballWorld.surfaceTag = (contactPos.z < 20.0f) ? 1 : 2; // 1: ground/pitch, 2: wall/ceiling
+    }
+    PushPhysicsEvent(ev);
 }
 
 // Synchronize Arena state to g_state
@@ -422,6 +560,11 @@ int physics_createArena() {
     if (!g_arena) return 0;
 
     g_arena->SetGoalScoreCallback(onGoalScoredCallback, nullptr);
+    g_arena->SetCarBumpCallback(onCarBumpCallback, nullptr);
+    g_arena->SetBallWorldCallback(onBallWorldCallback, nullptr);
+
+    for (int p = 0; p < NUM_ARENA_PADS; p++) g_prevPadActive[p] = true;
+    g_lastBallWorldHitTick = 0;
 
     if (g_unlimitedBoost) {
         g_arena->_mutatorConfig.boostUsedPerSecond = 0.0f;
@@ -457,20 +600,68 @@ void physics_step(int ticks) {
 
         g_arena->Step(1);
 
+        uint64_t currentStepTick = g_arena->tickCount > 0 ? (g_arena->tickCount - 1) : 0;
+
         // Update serials and native debounced collision events
         for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
             Car* car = g_cars[i];
             CarTracker& tracker = g_carTrackers[i];
             CarState cs = car->GetState();
 
-            if (cs.isJumping && !tracker.prevJumping) tracker.jumpSerial += 1.0f;
+            // Single jump
+            if (cs.isJumping && !tracker.prevJumping) {
+                tracker.jumpSerial += 1.0f;
+                PhysicsEvent ev = {};
+                ev.type = EVENT_TYPE_CAR_ACTION;
+                ev.tick = static_cast<uint32_t>(currentStepTick);
+                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
+                ev.carAction.carIndex = static_cast<uint16_t>(i);
+                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
+                ev.carAction.subType = CAR_ACTION_SINGLE_JUMP;
+                PushPhysicsEvent(ev);
+            }
             tracker.prevJumping = cs.isJumping;
 
-            if (cs.isFlipping && !tracker.prevFlipping) tracker.dodgeSerial += 1.0f;
+            // Dodge / Flip
+            if (cs.isFlipping && !tracker.prevFlipping) {
+                tracker.dodgeSerial += 1.0f;
+                PhysicsEvent ev = {};
+                ev.type = EVENT_TYPE_CAR_ACTION;
+                ev.tick = static_cast<uint32_t>(currentStepTick);
+                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
+                ev.carAction.carIndex = static_cast<uint16_t>(i);
+                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
+                ev.carAction.subType = CAR_ACTION_DODGE;
+                PushPhysicsEvent(ev);
+            }
             tracker.prevFlipping = cs.isFlipping;
 
-            if (cs.hasDoubleJumped && !tracker.prevDoubleJumped) tracker.doubleJumpSerial += 1.0f;
+            // Double jump
+            if (cs.hasDoubleJumped && !tracker.prevDoubleJumped) {
+                tracker.doubleJumpSerial += 1.0f;
+                PhysicsEvent ev = {};
+                ev.type = EVENT_TYPE_CAR_ACTION;
+                ev.tick = static_cast<uint32_t>(currentStepTick);
+                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
+                ev.carAction.carIndex = static_cast<uint16_t>(i);
+                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
+                ev.carAction.subType = CAR_ACTION_DOUBLE_JUMP;
+                PushPhysicsEvent(ev);
+            }
             tracker.prevDoubleJumped = cs.hasDoubleJumped;
+
+            // Supersonic entering
+            if (cs.isSupersonic && !tracker.prevSupersonic) {
+                PhysicsEvent ev = {};
+                ev.type = EVENT_TYPE_CAR_SUPERSONIC_ENTER;
+                ev.tick = static_cast<uint32_t>(currentStepTick);
+                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
+                ev.supersonicEnter.carIndex = static_cast<uint16_t>(i);
+                ev.supersonicEnter.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
+                ev.supersonicEnter.speed = cs.vel.Length();
+                PushPhysicsEvent(ev);
+            }
+            tracker.prevSupersonic = cs.isSupersonic;
 
             bool hasFlipReset = cs.HasFlipReset();
             if (hasFlipReset && !tracker.prevHadFlipReset) tracker.flipResetSerial += 1.0f;
@@ -483,9 +674,6 @@ void physics_step(int ticks) {
             tracker.prevOnGround = cs.isOnGround;
 
             // RocketSim Native Debounced Collision Events
-            // Note: Arena::Step(1) increments tickCount at the end of the step,
-            // so the tick that just completed is (g_arena->tickCount - 1).
-            uint64_t currentStepTick = g_arena->tickCount > 0 ? (g_arena->tickCount - 1) : 0;
             const auto& hitInfo = car->_internalState.ballHitInfo;
             bool isTouching = (hitInfo.isValid && hitInfo.tickCountWhenHit == currentStepTick);
 
@@ -553,6 +741,31 @@ void physics_step(int ticks) {
                     tracker.ballHitSpeed = relVel.Length();
                 }
             }
+        }
+
+        // Boost Pad Pickup Events
+        const auto& pads = g_arena->GetBoostPads();
+        int padCount = static_cast<int>(std::min(static_cast<size_t>(NUM_ARENA_PADS), pads.size()));
+        for (int p = 0; p < padCount; p++) {
+            BoostPad* pad = pads[p];
+            BoostPadState pState = pad->GetState();
+            if (g_prevPadActive[p] && !pState.isActive) {
+                PhysicsEvent ev = {};
+                ev.type = EVENT_TYPE_BOOST_PICKUP;
+                ev.tick = static_cast<uint32_t>(currentStepTick);
+                ev.x = pad->config.pos.x;
+                ev.y = pad->config.pos.y;
+                ev.z = pad->config.pos.z;
+
+                Car* collector = pad->_internalState.curLockedCar;
+                int cIdx = getCarIndex(collector);
+                ev.boostPickup.carIndex = static_cast<uint16_t>(cIdx >= 0 ? cIdx : 0);
+                ev.boostPickup.team = static_cast<uint16_t>((collector && collector->team == Team::ORANGE) ? 1 : 0);
+                ev.boostPickup.padIndex = static_cast<uint32_t>(p);
+                ev.boostPickup.isBig = pad->config.isBig ? 1 : 0;
+                PushPhysicsEvent(ev);
+            }
+            g_prevPadActive[p] = pState.isActive;
         }
     }
 

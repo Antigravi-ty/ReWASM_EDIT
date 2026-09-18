@@ -23,6 +23,7 @@ common_flags = [
     "-fno-fast-math",
     "-fno-associative-math",
     "-DNDEBUG",
+    "-g2",
     f"-I{os.path.join(ROOT_DIR, 'src')}",
     f"-I{os.path.join(ROOT_DIR, 'libsrc', 'bullet3-3.24')}"
 ]
@@ -70,6 +71,7 @@ link_cmd = [
     "-fno-fast-math",
     "-fno-associative-math",
     "-DNDEBUG",
+    "-g2",
     "-sFILESYSTEM=0",
     "-sUSE_CLOSURE_COMPILER=0",
     "-sENVIRONMENT=web,node,worker",

@@ -110,6 +110,11 @@ void Arena::SetCarBumpCallback(CarBumpEventFn callbackFunc, void* userInfo) {
 	_carBumpCallback.userInfo = userInfo;
 }
 
+void Arena::SetBallWorldCallback(BallWorldEventFn callbackFunc, void* userInfo) {
+	_ballWorldCallback.func = callbackFunc;
+	_ballWorldCallback.userInfo = userInfo;
+}
+
 void Arena::ResetToRandomKickoff(int seed) {
 	using namespace RLConst;
 	// TODO: Make shuffling of kickoff setup more efficient (?)
@@ -300,6 +305,17 @@ bool Arena::_BulletContactAddedCallback(
 		Arena* arenaInst = (Arena*)bodyB->getUserPointer();
 		arenaInst->ball->_OnWorldCollision(arenaInst->gameMode, contactPoint.m_normalWorldOnB, arenaInst->tickTime);
 		
+		if (arenaInst->_ballWorldCallback.func) {
+			Vec contactPos = contactPoint.m_positionWorldOnB * BT_TO_UU;
+			Vec normal = contactPoint.m_normalWorldOnB;
+			float speed = arenaInst->ball ? arenaInst->ball->GetState().vel.Length() : 0.0f;
+			bool isNearGoalY = std::abs(contactPos.y) >= 4950.0f;
+			bool isCrossbar = isNearGoalY && (std::abs(contactPos.z - 642.0f) < 80.0f) && (std::abs(contactPos.x) <= 950.0f);
+			bool isPost = isNearGoalY && (std::abs(std::abs(contactPos.x) - 893.0f) < 80.0f) && (contactPos.z >= -10.0f && contactPos.z <= 700.0f);
+			bool isGoalpost = isCrossbar || isPost;
+			arenaInst->_ballWorldCallback.func(arenaInst, contactPos, normal, speed, isGoalpost, arenaInst->_ballWorldCallback.userInfo);
+		}
+
 		// Set as special (unless in snowday)
 		if (arenaInst->gameMode != GameMode::SNOWDAY)
 			contactPoint.m_isSpecial = true;
@@ -374,6 +390,7 @@ void Arena::_BtCallback_OnCarCarCollision(Car* car1, Car* car2, btManifoldPoint&
 					if (isDemo && !_mutatorConfig.enableTeamDemos)
 						isDemo = car1->team != car2->team;
 
+					float bumpImpulseLen = 0.0f;
 					if (isDemo) {
 						car2->Demolish(_mutatorConfig.respawnDelay);
 					} else {
@@ -390,14 +407,17 @@ void Arena::_BtCallback_OnCarCarCollision(Car* car1, Car* car2, btManifoldPoint&
 							hitUpDir * BUMP_UPWARD_VEL_AMOUNT_CURVE.GetOutput(speedTowardsOtherCar)
 							* _mutatorConfig.bumpForceScale;
 
+						bumpImpulseLen = bumpImpulse.Length();
 						car2->_velocityImpulseCache += bumpImpulse * UU_TO_BT;
 					}
 
 					car1->_internalState.carContact.otherCarID = car2->id;
 					car1->_internalState.carContact.cooldownTimer = _mutatorConfig.bumpCooldownTime;
 
-					if (_carBumpCallback.func)
-						_carBumpCallback.func(this, car1, car2, isDemo, _carBumpCallback.userInfo);
+					if (_carBumpCallback.func) {
+						Vec contactPos = isSwapped ? (manifoldPoint.m_positionWorldOnA * BT_TO_UU) : (manifoldPoint.m_positionWorldOnB * BT_TO_UU);
+						_carBumpCallback.func(this, car1, car2, isDemo, contactPos, speedTowardsOtherCar, bumpImpulseLen, _carBumpCallback.userInfo);
+					}
 				}
 			}
 		}
@@ -649,6 +669,7 @@ Arena* Arena::Clone(bool copyCallbacks) {
 	if (copyCallbacks) {
 		newArena->_goalScoreCallback = this->_goalScoreCallback;
 		newArena->_carBumpCallback = this->_carBumpCallback;
+		newArena->_ballWorldCallback = this->_ballWorldCallback;
 	}
 
 	newArena->ball->SetState(this->ball->GetState());

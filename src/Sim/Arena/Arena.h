@@ -22,7 +22,8 @@
 RS_NS_START
 
 typedef std::function<void(class Arena* arena, Team scoringTeam, void* userInfo)> GoalScoreEventFn;
-typedef std::function<void(class Arena* arena, Car* bumper, Car* victim, bool isDemo, void* userInfo)> CarBumpEventFn;
+typedef std::function<void(class Arena* arena, Car* bumper, Car* victim, bool isDemo, const Vec& contactPos, float relSpeed, float impulse, void* userInfo)> CarBumpEventFn;
+typedef std::function<void(class Arena* arena, const Vec& contactPos, const Vec& normal, float speed, bool isGoalpost, void* userInfo)> BallWorldEventFn;
 
 // The container for all game simulation
 // Stores cars, the ball, all arena collisions, and manages the overall game state
@@ -106,6 +107,12 @@ public:
 		void* userInfo = NULL;
 	} _carBumpCallback;
 	void SetCarBumpCallback(CarBumpEventFn callbackFn, void* userInfo = NULL);
+
+	struct {
+		BallWorldEventFn func = NULL;
+		void* userInfo = NULL;
+	} _ballWorldCallback;
+	void SetBallWorldCallback(BallWorldEventFn callbackFn, void* userInfo = NULL);
 
 	// NOTE: Arena should be destroyed after use
 	static Arena* Create(GameMode gameMode, const ArenaConfig& arenaConfig = {}, float tickRate = 120);
