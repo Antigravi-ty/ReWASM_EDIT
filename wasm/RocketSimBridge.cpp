@@ -359,6 +359,20 @@ static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
         }
     }
 
+    // Reset Bullet collision manifold cache to avoid warm-starting repulsion artifacts on rollback
+    if (g_arena) {
+        btDispatcher* dispatcher = g_arena->_bulletWorld.getDispatcher();
+        if (dispatcher) {
+            int numManifolds = dispatcher->getNumManifolds();
+            for (int m = 0; m < numManifolds; m++) {
+                btPersistentManifold* manifold = dispatcher->getManifoldByIndexInternal(m);
+                if (manifold) {
+                    manifold->clearManifold();
+                }
+            }
+        }
+    }
+
     syncStateBuffer();
 }
 
