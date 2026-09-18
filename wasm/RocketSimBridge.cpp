@@ -22,7 +22,7 @@ using namespace RocketSim;
 
 // Buffer layout constants matching RocketSimConstants.js
 static constexpr int MAX_ARENA_CARS = 8;
-static constexpr int CAR_STRIDE = 51;
+static constexpr int CAR_STRIDE = 40;
 static constexpr int CONTROLS_STRIDE = 8;
 static constexpr int NUM_ARENA_PADS = 34;
 static constexpr int PAD_STATE_STRIDE = 2;
@@ -64,20 +64,10 @@ struct CarStatePod {
     float hasFlipOrJump;
     float isBoosting;
     float isFlipping;
-    float flipResetSerial;
-    WheelPod wheels[4]; // 12 floats (offset 26..37)
-    float groundNormalX, groundNormalY, groundNormalZ; // 3 floats (offset 38..40)
-    float jumpSerial;
-    float dodgeSerial;
-    float doubleJumpSerial;
-    float wheelImpactSerial;
-    float wheelImpactSpeed;
-    float ballHitSerial;
-    float ballHitSpeed;
-    float ballWorldImpactSerial;
-    float ballWorldImpactSpeed;
-    float ballWorldSurface;
-}; // 51 floats
+    WheelPod wheels[4]; // 12 floats (offset 25..36)
+    float groundNormalX, groundNormalY, groundNormalZ; // 3 floats (offset 37..39)
+}; // 40 floats
+static_assert(sizeof(CarStatePod) == 40 * sizeof(float), "CarStatePod must be 40 floats (160 bytes)");
 
 struct BoostPadStatePod {
     float isActive;
@@ -199,7 +189,7 @@ struct PhysicsEventBuffer {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(GameStateBufferPod) == 512 * sizeof(float), "Memory layout size must be exactly 512 floats");
+static_assert(sizeof(GameStateBufferPod) == 424 * sizeof(float), "Memory layout size must be exactly 424 floats");
 static_assert(sizeof(PhysicsEvent) == 48, "PhysicsEvent size must be exactly 48 bytes");
 static_assert(sizeof(PhysicsEventBuffer) == 16 + 64 * 48, "PhysicsEventBuffer size must be exactly 3120 bytes");
 
@@ -226,27 +216,12 @@ static std::vector<Car*> g_cars;
 static int g_goalScoredFlag = 0;
 static bool g_unlimitedBoost = false;
 
-// Per-car tracking state for serials & debouncing
+// Per-car tracking state for debouncing and edge-triggered physics events
 struct CarTracker {
-    float jumpSerial = 0.0f;
-    float dodgeSerial = 0.0f;
-    float doubleJumpSerial = 0.0f;
-    float wheelImpactSerial = 0.0f;
-    float wheelImpactSpeed = 0.0f;
-    float ballHitSerial = 0.0f;
-    float ballHitSpeed = 0.0f;
-    float ballWorldImpactSerial = 0.0f;
-    float ballWorldImpactSpeed = 0.0f;
-    float ballWorldSurface = 0.0f;
-    float flipResetSerial = 0.0f;
-
     bool prevJumping = false;
     bool prevFlipping = false;
     bool prevDoubleJumped = false;
     bool prevSupersonic = false;
-    bool prevOnGround = true;
-    bool prevHadFlipReset = false;
-    uint64_t lastBallHitTick = 0;
     bool wasTouching = false;
 };
 static CarTracker g_carTrackers[MAX_ARENA_CARS];
@@ -400,7 +375,6 @@ static void syncStateBuffer() {
         cPod.hasFlipOrJump = cs.HasFlipOrJump() ? 1.0f : 0.0f;
         cPod.isBoosting = cs.isBoosting ? 1.0f : 0.0f;
         cPod.isFlipping = cs.isFlipping ? 1.0f : 0.0f;
-        cPod.flipResetSerial = tracker.flipResetSerial;
 
         // 4 wheels * 3 floats [susLength, steerAngle, hasContact]
         btVector3 accumulatedWheelNormal(0.0f, 0.0f, 0.0f);
@@ -443,17 +417,6 @@ static void syncStateBuffer() {
             cPod.isOnGround = 0.0f;
         }
 
-        // Serials
-        cPod.jumpSerial = tracker.jumpSerial;
-        cPod.dodgeSerial = tracker.dodgeSerial;
-        cPod.doubleJumpSerial = tracker.doubleJumpSerial;
-        cPod.wheelImpactSerial = tracker.wheelImpactSerial;
-        cPod.wheelImpactSpeed = tracker.wheelImpactSpeed;
-        cPod.ballHitSerial = tracker.ballHitSerial;
-        cPod.ballHitSpeed = tracker.ballHitSpeed;
-        cPod.ballWorldImpactSerial = tracker.ballWorldImpactSerial;
-        cPod.ballWorldImpactSpeed = tracker.ballWorldImpactSpeed;
-        cPod.ballWorldSurface = tracker.ballWorldSurface;
     }
 
     // Boost pad states
@@ -602,7 +565,7 @@ void physics_step(int ticks) {
 
         uint64_t currentStepTick = g_arena->tickCount > 0 ? (g_arena->tickCount - 1) : 0;
 
-        // Update serials and native debounced collision events
+        // Update native debounced collision and action events
         for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
             Car* car = g_cars[i];
             CarTracker& tracker = g_carTrackers[i];
@@ -610,7 +573,6 @@ void physics_step(int ticks) {
 
             // Single jump
             if (cs.isJumping && !tracker.prevJumping) {
-                tracker.jumpSerial += 1.0f;
                 PhysicsEvent ev = {};
                 ev.type = EVENT_TYPE_CAR_ACTION;
                 ev.tick = static_cast<uint32_t>(currentStepTick);
@@ -624,7 +586,6 @@ void physics_step(int ticks) {
 
             // Dodge / Flip
             if (cs.isFlipping && !tracker.prevFlipping) {
-                tracker.dodgeSerial += 1.0f;
                 PhysicsEvent ev = {};
                 ev.type = EVENT_TYPE_CAR_ACTION;
                 ev.tick = static_cast<uint32_t>(currentStepTick);
@@ -638,7 +599,6 @@ void physics_step(int ticks) {
 
             // Double jump
             if (cs.hasDoubleJumped && !tracker.prevDoubleJumped) {
-                tracker.doubleJumpSerial += 1.0f;
                 PhysicsEvent ev = {};
                 ev.type = EVENT_TYPE_CAR_ACTION;
                 ev.tick = static_cast<uint32_t>(currentStepTick);
@@ -663,15 +623,6 @@ void physics_step(int ticks) {
             }
             tracker.prevSupersonic = cs.isSupersonic;
 
-            bool hasFlipReset = cs.HasFlipReset();
-            if (hasFlipReset && !tracker.prevHadFlipReset) tracker.flipResetSerial += 1.0f;
-            tracker.prevHadFlipReset = hasFlipReset;
-
-            if (cs.isOnGround && !tracker.prevOnGround && std::abs(cs.vel.z) > 200.0f) {
-                tracker.wheelImpactSerial += 1.0f;
-                tracker.wheelImpactSpeed = std::abs(cs.vel.z);
-            }
-            tracker.prevOnGround = cs.isOnGround;
 
             // RocketSim Native Debounced Collision Events
             const auto& hitInfo = car->_internalState.ballHitInfo;
@@ -732,15 +683,6 @@ void physics_step(int ticks) {
                 tracker.wasTouching = false;
             }
 
-            // Maintain legacy serial for backward-compatibility
-            if (cs.ballHitInfo.isValid && cs.ballHitInfo.tickCountWhenHit != tracker.lastBallHitTick) {
-                tracker.lastBallHitTick = cs.ballHitInfo.tickCountWhenHit;
-                tracker.ballHitSerial += 1.0f;
-                if (g_arena->ball) {
-                    Vec relVel = cs.vel - g_arena->ball->GetState().vel;
-                    tracker.ballHitSpeed = relVel.Length();
-                }
-            }
         }
 
         // Boost Pad Pickup Events
