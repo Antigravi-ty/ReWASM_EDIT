@@ -57,7 +57,7 @@ exported_functions = (
     "'_physics_addCar','_physics_getCarConfig','_physics_setCarState',"
     "'_physics_setBallState','_physics_setUnlimitedBoost','_physics_getBallOnGround',"
     "'_physics_getBallRadius','_physics_controlBall',"
-    "'_physics_getEventBufferPtr','_physics_getEventBufferSize','_physics_clearEvents']"
+    "'_physics_getEventBufferPtr','_physics_getEventBufferSize','_physics_clearEvents','_physics_saveState','_physics_restoreState','_physics_saveStateSlot','_physics_restoreStateSlot','_physics_getStateSnapshotSize','_physics_stepSilent']"
 )
 
 exported_runtime_methods = (

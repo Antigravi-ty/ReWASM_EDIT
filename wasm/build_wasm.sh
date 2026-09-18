@@ -4,7 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! command -v em++ &> /dev/null; then
-    if [ -f "/tmp/env.sh" ]; then
+    if [ -f "/.agents/emsdk/emsdk_env.sh" ]; then
+        # shellcheck source=/dev/null
+        source /.agents/emsdk/emsdk_env.sh
+    elif [ -f "/tmp/env.sh" ]; then
         # shellcheck source=/dev/null
         source /tmp/env.sh
     elif [ -n "${EMSDK:-}" ] && [ -f "${EMSDK}/emsdk_env.sh" ]; then

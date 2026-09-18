@@ -204,31 +204,163 @@ static float g_padInfoBuffer[NUM_ARENA_PADS * 4];                 // 136 floats
 // Global Ring Buffer for zero-copy physics events
 static PhysicsEventBuffer g_eventBuffer = { 0, EVENT_RING_BUFFER_CAPACITY, sizeof(PhysicsEvent), 0 };
 
+// Silent resimulation mode flag (suppresses event emission during rollback replay)
+static bool g_silentResim = false;
+
 static void PushPhysicsEvent(const PhysicsEvent& ev) {
+    if (g_silentResim) return;
     uint32_t slot = g_eventBuffer.writeSeq % EVENT_RING_BUFFER_CAPACITY;
     g_eventBuffer.events[slot] = ev;
     g_eventBuffer.writeSeq++;
 }
 
 // Active Arena and simulation state
+static void syncStateBuffer();
 static Arena* g_arena = nullptr;
 static std::vector<Car*> g_cars;
 static int g_goalScoredFlag = 0;
 static bool g_unlimitedBoost = false;
 
-// Per-car tracking state for debouncing and edge-triggered physics events
-struct CarTracker {
-    bool prevJumping = false;
-    bool prevFlipping = false;
-    bool prevDoubleJumped = false;
-    bool prevSupersonic = false;
-    bool wasTouching = false;
-};
-static CarTracker g_carTrackers[MAX_ARENA_CARS];
-
-// Boost pad and world impact tracking
-static bool g_prevPadActive[NUM_ARENA_PADS] = {};
 static uint64_t g_lastBallWorldHitTick = 0;
+
+// Full Atomic State Snapshot Definitions for Deterministic Rollback
+#pragma pack(push, 4)
+struct BoostPadSnapshotPod {
+    uint32_t isActive;
+    float cooldown;
+    uint32_t prevLockedCarID;
+};
+
+struct CarSnapshotPod {
+    uint32_t team;
+    uint32_t id;
+    CarControls controls;
+    CarState state;
+    // Exact Bullet rigid body state
+    btTransform rbTransform;
+    btVector3 rbLinearVelocity;
+    btVector3 rbAngularVelocity;
+    btWheelInfoRL wheels[4];
+};
+
+struct ArenaSnapshotPod {
+    uint64_t tickCount;
+    uint32_t lastCarID;
+    int32_t goalScoredFlag;
+    uint32_t numCars;
+    uint64_t lastBallWorldHitTick;
+    BallState ballState;
+    btTransform ballTransform;
+    btVector3 ballLinearVelocity;
+    btVector3 ballAngularVelocity;
+    BoostPadSnapshotPod pads[NUM_ARENA_PADS];
+    CarSnapshotPod cars[MAX_ARENA_CARS];
+};
+#pragma pack(pop)
+
+static_assert(sizeof(ArenaSnapshotPod) % sizeof(float) == 0, "ArenaSnapshotPod must be 4-byte aligned float multiple");
+
+static constexpr int MAX_SNAPSHOT_SLOTS = 256;
+static ArenaSnapshotPod g_snapshotSlots[MAX_SNAPSHOT_SLOTS];
+
+static void serializeToSnapshot(ArenaSnapshotPod& snap) {
+    if (!g_arena) {
+        std::memset(&snap, 0, sizeof(ArenaSnapshotPod));
+        return;
+    }
+    snap.tickCount = g_arena->tickCount;
+    snap.lastCarID = g_arena->_lastCarID;
+    snap.goalScoredFlag = g_goalScoredFlag;
+    snap.numCars = static_cast<uint32_t>(std::min(g_cars.size(), static_cast<size_t>(MAX_ARENA_CARS)));
+    snap.lastBallWorldHitTick = g_lastBallWorldHitTick;
+
+    if (g_arena->ball) {
+        snap.ballState = g_arena->ball->GetState();
+        snap.ballTransform = g_arena->ball->_rigidBody.getWorldTransform();
+        snap.ballLinearVelocity = g_arena->ball->_rigidBody.getLinearVelocity();
+        snap.ballAngularVelocity = g_arena->ball->_rigidBody.getAngularVelocity();
+    }
+
+    const auto& pads = g_arena->GetBoostPads();
+    size_t padCount = std::min(pads.size(), static_cast<size_t>(NUM_ARENA_PADS));
+    for (size_t p = 0; p < padCount; p++) {
+        BoostPad* pad = pads[p];
+        snap.pads[p].isActive = pad->_internalState.isActive ? 1 : 0;
+        snap.pads[p].cooldown = pad->_internalState.cooldown;
+        snap.pads[p].prevLockedCarID = pad->_internalState.prevLockedCarID;
+    }
+
+    for (size_t i = 0; i < snap.numCars; i++) {
+        Car* car = g_cars[i];
+        snap.cars[i].team = static_cast<uint32_t>(car->team);
+        snap.cars[i].id = car->id;
+        snap.cars[i].controls = car->controls;
+        snap.cars[i].state = car->GetState();
+        snap.cars[i].rbTransform = car->_rigidBody.getWorldTransform();
+        snap.cars[i].rbLinearVelocity = car->_rigidBody.getLinearVelocity();
+        snap.cars[i].rbAngularVelocity = car->_rigidBody.getAngularVelocity();
+        int numWheels = std::min(4, car->_bulletVehicle.getNumWheels());
+        for (int w = 0; w < numWheels; w++) {
+            snap.cars[i].wheels[w] = car->_bulletVehicle.getWheelInfo(w);
+        }
+    }
+}
+
+static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
+    if (!g_arena) return;
+    g_arena->tickCount = snap.tickCount;
+    g_arena->_lastCarID = snap.lastCarID;
+    g_goalScoredFlag = snap.goalScoredFlag;
+    g_lastBallWorldHitTick = snap.lastBallWorldHitTick;
+
+    if (g_arena->ball) {
+        g_arena->ball->SetState(snap.ballState);
+        g_arena->ball->_rigidBody.setWorldTransform(snap.ballTransform);
+        g_arena->ball->_rigidBody.setLinearVelocity(snap.ballLinearVelocity);
+        g_arena->ball->_rigidBody.setAngularVelocity(snap.ballAngularVelocity);
+        g_arena->ball->_rigidBody.setInterpolationWorldTransform(snap.ballTransform);
+        g_arena->ball->_rigidBody.setInterpolationLinearVelocity(snap.ballLinearVelocity);
+        g_arena->ball->_rigidBody.setInterpolationAngularVelocity(snap.ballAngularVelocity);
+        g_arena->ball->_rigidBody.updateInertiaTensor();
+        g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+    }
+
+    const auto& pads = g_arena->GetBoostPads();
+    size_t padCount = std::min(pads.size(), static_cast<size_t>(NUM_ARENA_PADS));
+    for (size_t p = 0; p < padCount; p++) {
+        pads[p]->_internalState.isActive = (snap.pads[p].isActive != 0);
+        pads[p]->_internalState.cooldown = snap.pads[p].cooldown;
+        pads[p]->_internalState.prevLockedCarID = snap.pads[p].prevLockedCarID;
+        pads[p]->_internalState.curLockedCar = nullptr;
+    }
+
+    size_t numCars = std::min(g_cars.size(), static_cast<size_t>(snap.numCars));
+    for (size_t i = 0; i < numCars; i++) {
+        Car* car = g_cars[i];
+        car->team = static_cast<Team>(snap.cars[i].team);
+        car->id = snap.cars[i].id;
+        car->controls = snap.cars[i].controls;
+        car->SetState(snap.cars[i].state);
+
+        car->_rigidBody.setWorldTransform(snap.cars[i].rbTransform);
+        car->_rigidBody.setLinearVelocity(snap.cars[i].rbLinearVelocity);
+        car->_rigidBody.setAngularVelocity(snap.cars[i].rbAngularVelocity);
+        car->_rigidBody.setInterpolationWorldTransform(snap.cars[i].rbTransform);
+        car->_rigidBody.setInterpolationLinearVelocity(snap.cars[i].rbLinearVelocity);
+        car->_rigidBody.setInterpolationAngularVelocity(snap.cars[i].rbAngularVelocity);
+        car->_rigidBody.updateInertiaTensor();
+        g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
+
+        int numWheels = std::min(4, car->_bulletVehicle.getNumWheels());
+        for (int w = 0; w < numWheels; w++) {
+            car->_bulletVehicle.getWheelInfo(w) = snap.cars[i].wheels[w];
+            car->_bulletVehicle.updateWheelTransformsWS(car->_bulletVehicle.getWheelInfo(w));
+            car->_bulletVehicle.updateWheelTransform(w);
+        }
+    }
+
+    syncStateBuffer();
+}
 
 static int getCarIndex(Car* car) {
     if (!car) return -1;
@@ -246,6 +378,7 @@ static void onGoalScoredCallback(Arena* arena, Team scoringTeam, void* userInfo)
 
 // Car-Car collision & Demo callback
 static void onCarBumpCallback(Arena* arena, Car* bumper, Car* victim, bool isDemo, const Vec& contactPos, float relSpeed, float impulse, void* userInfo) {
+    if (g_silentResim) return;
     PhysicsEvent ev = {};
     ev.type = EVENT_TYPE_CAR_CAR_COLLISION;
     ev.tick = static_cast<uint32_t>(arena->tickCount > 0 ? arena->tickCount - 1 : 0);
@@ -267,6 +400,7 @@ static void onCarBumpCallback(Arena* arena, Car* bumper, Car* victim, bool isDem
 
 // Ball-World & Goalpost collision callback
 static void onBallWorldCallback(Arena* arena, const Vec& contactPos, const Vec& normal, float speed, bool isGoalpost, void* userInfo) {
+    if (g_silentResim) return;
     uint64_t curTick = arena->tickCount;
     // Debounce successive contact frames (min 4 ticks ≈ 33ms) and ignore rolling/low speeds (<120 UU/s)
     if (curTick <= g_lastBallWorldHitTick + 4 || speed < 120.0f) {
@@ -340,7 +474,7 @@ static void syncStateBuffer() {
     int numCars = static_cast<int>(std::min(static_cast<size_t>(MAX_ARENA_CARS), g_cars.size()));
     for (int i = 0; i < numCars; i++) {
         Car* car = g_cars[i];
-        CarTracker& tracker = g_carTrackers[i];
+        
         CarState cs = car->GetState();
         CarStatePod& cPod = g_state.cars[i];
 
@@ -511,9 +645,7 @@ int physics_createArena() {
     g_cars.clear();
     g_goalScoredFlag = 0;
 
-    for (int i = 0; i < MAX_ARENA_CARS; i++) {
-        g_carTrackers[i] = CarTracker();
-    }
+
 
     physics_clearEvents();
 
@@ -526,7 +658,7 @@ int physics_createArena() {
     g_arena->SetCarBumpCallback(onCarBumpCallback, nullptr);
     g_arena->SetBallWorldCallback(onBallWorldCallback, nullptr);
 
-    for (int p = 0; p < NUM_ARENA_PADS; p++) g_prevPadActive[p] = true;
+
     g_lastBallWorldHitTick = 0;
 
     if (g_unlimitedBoost) {
@@ -537,9 +669,9 @@ int physics_createArena() {
     return 1;
 }
 
-// Export 's'
-void physics_step(int ticks) {
+static void executePhysicsStep(int ticks, bool silent) {
     if (!g_arena) return;
+    g_silentResim = silent;
 
     for (int step = 0; step < ticks; step++) {
         // Feed controls for each vehicle
@@ -547,14 +679,14 @@ void physics_step(int ticks) {
             Car* car = g_cars[i];
             float* ctrlPtr = &g_controlsBuffer[i * CONTROLS_STRIDE];
 
-            car->controls.throttle = ctrlPtr[0];
-            car->controls.steer = ctrlPtr[1];
-            car->controls.pitch = ctrlPtr[2];
-            car->controls.yaw = ctrlPtr[3];
-            car->controls.roll = ctrlPtr[4];
-            car->controls.jump = ctrlPtr[5] > 0.5f;
-            car->controls.boost = ctrlPtr[6] > 0.5f;
-            car->controls.handbrake = ctrlPtr[7] > 0.5f;
+            car->controls.throttle  = ctrlPtr[0];
+            car->controls.steer     = ctrlPtr[1];
+            car->controls.pitch     = ctrlPtr[2];
+            car->controls.yaw       = ctrlPtr[3];
+            car->controls.roll      = ctrlPtr[4];
+            car->controls.jump      = (ctrlPtr[5] > 0.5f);
+            car->controls.boost     = (ctrlPtr[6] > 0.5f);
+            car->controls.handbrake = (ctrlPtr[7] > 0.5f);
 
             if (g_unlimitedBoost) {
                 car->_internalState.boost = 100.0f;
@@ -562,156 +694,51 @@ void physics_step(int ticks) {
         }
 
         g_arena->Step(1);
-
-        uint64_t currentStepTick = g_arena->tickCount > 0 ? (g_arena->tickCount - 1) : 0;
-
-        // Update native debounced collision and action events
-        for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
-            Car* car = g_cars[i];
-            CarTracker& tracker = g_carTrackers[i];
-            CarState cs = car->GetState();
-
-            // Single jump
-            if (cs.isJumping && !tracker.prevJumping) {
-                PhysicsEvent ev = {};
-                ev.type = EVENT_TYPE_CAR_ACTION;
-                ev.tick = static_cast<uint32_t>(currentStepTick);
-                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
-                ev.carAction.carIndex = static_cast<uint16_t>(i);
-                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
-                ev.carAction.subType = CAR_ACTION_SINGLE_JUMP;
-                PushPhysicsEvent(ev);
-            }
-            tracker.prevJumping = cs.isJumping;
-
-            // Dodge / Flip
-            if (cs.isFlipping && !tracker.prevFlipping) {
-                PhysicsEvent ev = {};
-                ev.type = EVENT_TYPE_CAR_ACTION;
-                ev.tick = static_cast<uint32_t>(currentStepTick);
-                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
-                ev.carAction.carIndex = static_cast<uint16_t>(i);
-                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
-                ev.carAction.subType = CAR_ACTION_DODGE;
-                PushPhysicsEvent(ev);
-            }
-            tracker.prevFlipping = cs.isFlipping;
-
-            // Double jump
-            if (cs.hasDoubleJumped && !tracker.prevDoubleJumped) {
-                PhysicsEvent ev = {};
-                ev.type = EVENT_TYPE_CAR_ACTION;
-                ev.tick = static_cast<uint32_t>(currentStepTick);
-                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
-                ev.carAction.carIndex = static_cast<uint16_t>(i);
-                ev.carAction.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
-                ev.carAction.subType = CAR_ACTION_DOUBLE_JUMP;
-                PushPhysicsEvent(ev);
-            }
-            tracker.prevDoubleJumped = cs.hasDoubleJumped;
-
-            // Supersonic entering
-            if (cs.isSupersonic && !tracker.prevSupersonic) {
-                PhysicsEvent ev = {};
-                ev.type = EVENT_TYPE_CAR_SUPERSONIC_ENTER;
-                ev.tick = static_cast<uint32_t>(currentStepTick);
-                ev.x = cs.pos.x; ev.y = cs.pos.y; ev.z = cs.pos.z;
-                ev.supersonicEnter.carIndex = static_cast<uint16_t>(i);
-                ev.supersonicEnter.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
-                ev.supersonicEnter.speed = cs.vel.Length();
-                PushPhysicsEvent(ev);
-            }
-            tracker.prevSupersonic = cs.isSupersonic;
-
-
-            // RocketSim Native Debounced Collision Events
-            const auto& hitInfo = car->_internalState.ballHitInfo;
-            bool isTouching = (hitInfo.isValid && hitInfo.tickCountWhenHit == currentStepTick);
-
-            if (isTouching) {
-                // Condition 1: Initial touch (was not touching on previous tick)
-                bool isInitialTouch = !tracker.wasTouching;
-
-                // Condition 2: Psyonix official extra hit impulse applied this tick
-                bool hasRealImpulse = (hitInfo.tickCountWhenExtraImpulseApplied == currentStepTick)
-                                      && (hitInfo.extraHitVel.Length() > 10.0f);
-
-                if (isInitialTouch || hasRealImpulse) {
-                    PhysicsEvent ev = {};
-                    ev.type = 1; // CarBallHit
-                    ev.tick = static_cast<uint32_t>(currentStepTick);
-
-                    Vec contactPos = hitInfo.ballPos + hitInfo.relativePosOnBall;
-                    ev.x = contactPos.x;
-                    ev.y = contactPos.y;
-                    ev.z = contactPos.z;
-
-                    ev.carBall.carIndex = static_cast<uint16_t>(i);
-                    ev.carBall.team = static_cast<uint16_t>(car->team == Team::BLUE ? 0 : 1);
-
-                    Vec relVel = cs.vel;
-                    if (g_arena->ball) {
-                        relVel = relVel - g_arena->ball->GetState().vel;
-                    }
-                    ev.carBall.relSpeed = relVel.Length();
-
-                    Vec normal = -hitInfo.relativePosOnBall;
-                    float normLen = normal.Length();
-                    if (normLen > 1e-4f) {
-                        normal = normal / normLen;
-                    } else {
-                        normal = Vec(0, 0, 1);
-                    }
-                    ev.carBall.normalX = normal.x;
-                    ev.carBall.normalY = normal.y;
-                    ev.carBall.normalZ = normal.z;
-
-                    ev.carBall.impulse = hitInfo.extraHitVel.Length();
-
-                    uint32_t flags = 0;
-                    if (isInitialTouch) flags |= (1 << 0);
-                    if (cs.isSupersonic) flags |= (1 << 1);
-                    if (cs.isFlipping) flags |= (1 << 2);
-                    if (cs.isOnGround) flags |= (1 << 3);
-                    ev.flags = flags;
-
-                    PushPhysicsEvent(ev);
-                }
-
-                tracker.wasTouching = true;
-            } else {
-                tracker.wasTouching = false;
-            }
-
-        }
-
-        // Boost Pad Pickup Events
-        const auto& pads = g_arena->GetBoostPads();
-        int padCount = static_cast<int>(std::min(static_cast<size_t>(NUM_ARENA_PADS), pads.size()));
-        for (int p = 0; p < padCount; p++) {
-            BoostPad* pad = pads[p];
-            BoostPadState pState = pad->GetState();
-            if (g_prevPadActive[p] && !pState.isActive) {
-                PhysicsEvent ev = {};
-                ev.type = EVENT_TYPE_BOOST_PICKUP;
-                ev.tick = static_cast<uint32_t>(currentStepTick);
-                ev.x = pad->config.pos.x;
-                ev.y = pad->config.pos.y;
-                ev.z = pad->config.pos.z;
-
-                Car* collector = pad->_internalState.curLockedCar;
-                int cIdx = getCarIndex(collector);
-                ev.boostPickup.carIndex = static_cast<uint16_t>(cIdx >= 0 ? cIdx : 0);
-                ev.boostPickup.team = static_cast<uint16_t>((collector && collector->team == Team::ORANGE) ? 1 : 0);
-                ev.boostPickup.padIndex = static_cast<uint32_t>(p);
-                ev.boostPickup.isBig = pad->config.isBig ? 1 : 0;
-                PushPhysicsEvent(ev);
-            }
-            g_prevPadActive[p] = pState.isActive;
-        }
     }
 
+    g_silentResim = false;
     syncStateBuffer();
+}
+
+// Export 's'
+void physics_step(int ticks) {
+    executePhysicsStep(ticks, false);
+}
+
+void physics_stepSilent(int ticks) {
+    executePhysicsStep(ticks, true);
+}
+
+int physics_saveState(float* outBuffer) {
+    if (!outBuffer) return 0;
+    ArenaSnapshotPod snap;
+    serializeToSnapshot(snap);
+    std::memcpy(outBuffer, &snap, sizeof(ArenaSnapshotPod));
+    return 1;
+}
+
+int physics_restoreState(const float* inBuffer) {
+    if (!inBuffer) return 0;
+    ArenaSnapshotPod snap;
+    std::memcpy(&snap, inBuffer, sizeof(ArenaSnapshotPod));
+    deserializeFromSnapshot(snap);
+    return 1;
+}
+
+int physics_saveStateSlot(int slot) {
+    if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
+    serializeToSnapshot(g_snapshotSlots[slot]);
+    return 1;
+}
+
+int physics_restoreStateSlot(int slot) {
+    if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
+    deserializeFromSnapshot(g_snapshotSlots[slot]);
+    return 1;
+}
+
+int physics_getStateSnapshotSize() {
+    return static_cast<int>(sizeof(ArenaSnapshotPod) / sizeof(float));
 }
 
 // Export 't'
@@ -751,7 +778,7 @@ int physics_addCar(int team, int hitboxType) {
     Car* car = g_arena->AddCar(t, cfg);
     g_cars.push_back(car);
     int newIndex = static_cast<int>(g_cars.size()) - 1;
-    g_carTrackers[newIndex] = CarTracker();
+
     syncStateBuffer();
     return newIndex;
 }
