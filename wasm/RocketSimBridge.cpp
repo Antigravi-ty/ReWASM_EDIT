@@ -234,7 +234,7 @@ static bool g_wasPadActive[NUM_ARENA_PADS] = {};
 // Per-car action tracking
 struct CarActionTracker {
     bool wasInAir = false;
-    bool hadUnlimitedFlip = true;
+    bool hadUnlimitedFlip = false;
     bool wasBoosting = false;
     bool wasSupersonic = false;
     bool wasJumping = false;
@@ -698,6 +698,13 @@ static void syncStateBuffer() {
         if (contactCount > 0) {
             groundNormal /= static_cast<float>(contactCount);
             groundNormal.normalize();
+        } else if (cs.worldContact.hasContact) {
+            groundNormal = btVector3(cs.worldContact.contactNormal.x, cs.worldContact.contactNormal.y, cs.worldContact.contactNormal.z);
+            if (groundNormal.length2() > 1e-6f) {
+                groundNormal.normalize();
+            } else {
+                groundNormal = btVector3(0, 0, 1);
+            }
         } else {
             groundNormal = btVector3(0, 0, 1);
         }
@@ -899,30 +906,25 @@ static void executePhysicsStep(int ticks, bool silent) {
                     }
                 }
 
-                // Flip reset gained from ball contact while airborne
-                bool isRealGround = cs.isOnGround && (cs.pos.z < 60.0f);
-                if (!isRealGround) {
-                    if (cs.hasJumped || cs.hasFlipped || cs.hasDoubleJumped) {
-                        tracker.hadUnlimitedFlip = false;
-                    }
-                    if (!tracker.hadUnlimitedFlip && !cs.hasJumped && !cs.hasFlipped && !cs.hasDoubleJumped &&
-                        cs.ballHitInfo.isValid && (g_arena->tickCount - cs.ballHitInfo.tickCountWhenHit <= 4)) {
-                        PhysicsEvent ev = {};
-                        ev.type = INCIDENT_FLIP_RESET_GAINED;
-                        ev.tick = static_cast<uint32_t>(g_arena->tickCount > 0 ? g_arena->tickCount - 1 : 0);
-                        ev.posX = cs.pos.x;
-                        ev.posY = cs.pos.y;
-                        ev.posZ = cs.pos.z;
-                        ev.primaryId = static_cast<uint16_t>(i);
-                        ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
-                        ev.subType = 1; // BALL_RESET
-                        PushPhysicsEvent(ev);
-
-                        tracker.hadUnlimitedFlip = true;
-                    }
-                } else {
-                    tracker.hadUnlimitedFlip = true;
+                // Flip reset gained (direct native GotFlipReset event with car & ball coordinates)
+                bool hasFlipReset = cs.GotFlipReset();
+                if (hasFlipReset && !tracker.hadUnlimitedFlip) {
+                    Vec ballPos = g_arena->ball ? g_arena->ball->GetState().pos : Vec(0, 0, 0);
+                    PhysicsEvent ev = {};
+                    ev.type = INCIDENT_FLIP_RESET_GAINED;
+                    ev.tick = static_cast<uint32_t>(g_arena->tickCount > 0 ? g_arena->tickCount - 1 : 0);
+                    ev.posX = cs.pos.x;
+                    ev.posY = cs.pos.y;
+                    ev.posZ = cs.pos.z;
+                    ev.normX = ballPos.x;
+                    ev.normY = ballPos.y;
+                    ev.normZ = ballPos.z;
+                    ev.primaryId = static_cast<uint16_t>(i);
+                    ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
+                    ev.subType = 1; // BALL_RESET
+                    PushPhysicsEvent(ev);
                 }
+                tracker.hadUnlimitedFlip = hasFlipReset;
 
                 // Supersonic entry
                 if (cs.isSupersonic && !tracker.wasSupersonic) {
