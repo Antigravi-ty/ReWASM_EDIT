@@ -64,7 +64,12 @@ exported_functions = (
     "'_physics_getBallPredictionCount','_physics_setSimControlFlags','_physics_getSimControlFlags',"
     "'_physics_setImpactThresholds','_physics_getBallMotionState','_physics_setPossessionEventEnabled',"
     "'_physics_getPossessionEventEnabled','_physics_getCurrentPossessionCar','_physics_getCurrentPossessionTeam',"
-    "'_physics_pushSignalEvent']"
+    "'_physics_pushSignalEvent','_physics_setSurfaceTaxonomyThresholds',"
+    "'_physics_setDirectionDotThreshold','_physics_getDirectionDotThreshold',"
+    "'_physics_isBallSleeping','_physics_setSimulationFrozen',"
+    "'_physics_setPossessionReportingEnabled','_physics_getPossessionStats',"
+    "'_physics_initReplayBuffer','_physics_clearReplayBuffer',"
+    "'_physics_getReplayBufferPtr','_physics_getReplayBufferSize','_physics_recordReplayFrame']"
 )
 
 exported_runtime_methods = (

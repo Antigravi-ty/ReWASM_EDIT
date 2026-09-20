@@ -966,6 +966,7 @@ static void executePhysicsStep(int ticks, bool silent) {
                     ev.posX = cs.pos.x; ev.posY = cs.pos.y; ev.posZ = cs.pos.z;
                     ev.primaryId = static_cast<uint16_t>(i);
                     ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
+                    ev.subType = 1; // SINGLE_JUMP
                     PushPhysicsEvent(ev);
                 }
                 if (cs.hasDoubleJumped && !tracker.hadDoubleJumped) {
@@ -975,6 +976,7 @@ static void executePhysicsStep(int ticks, bool silent) {
                     ev.posX = cs.pos.x; ev.posY = cs.pos.y; ev.posZ = cs.pos.z;
                     ev.primaryId = static_cast<uint16_t>(i);
                     ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
+                    ev.subType = 2; // DOUBLE_JUMP
                     PushPhysicsEvent(ev);
                 }
                 if (cs.isFlipping && !tracker.wasFlipping) {
@@ -984,6 +986,7 @@ static void executePhysicsStep(int ticks, bool silent) {
                     ev.posX = cs.pos.x; ev.posY = cs.pos.y; ev.posZ = cs.pos.z;
                     ev.primaryId = static_cast<uint16_t>(i);
                     ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
+                    ev.subType = 3; // DODGE
                     PushPhysicsEvent(ev);
                 }
                 tracker.wasJumping = cs.isJumping;
@@ -1408,6 +1411,42 @@ int physics_controlBall(int carIndex, int modeIndex) {
     g_arena->ball->SetState(bs);
     syncStateBuffer();
     return 1;
+}
+
+void physics_initBallPrediction(float maxSeconds) {
+    physics_updateBallPrediction(maxSeconds);
+}
+
+void physics_setSimControlFlags(uint32_t flags) {
+    if (flags & 1) {
+        physics_setSimulationFrozen(1, 0, 0);
+    } else {
+        physics_setSimulationFrozen(0, 0, 0);
+    }
+}
+
+uint32_t physics_getSimControlFlags() {
+    return g_simulationFrozen ? 1 : 0;
+}
+
+int physics_getBallMotionState() {
+    return (g_arena && g_arena->ball) ? g_arena->ball->_rigidBody.getActivationState() : 0;
+}
+
+void physics_setPossessionEventEnabled(int enabled) {
+    physics_setPossessionReportingEnabled(enabled);
+}
+
+int physics_getPossessionEventEnabled() {
+    return g_possession.reportingEnabled ? 1 : 0;
+}
+
+int physics_getCurrentPossessionCar() {
+    return g_possession.lastCarIndex;
+}
+
+int physics_getCurrentPossessionTeam() {
+    return g_possession.currentPossessionTeam;
 }
 
 } // extern "C"
