@@ -30,7 +30,7 @@ struct ArenaConfig {
 
 	// Ball rotation updates are skipped to improve performance
 	// Disabled in snowday
-	bool noBallRot = true;
+	bool noBallRot = false;
 
 	// Use a custom broadphase designed for RocketSim
 	// Improves performance, but becomes inefficient on giant maps

@@ -780,7 +780,9 @@ int physics_createArena() {
         g_carTrackers[i] = CarActionTracker();
     }
 
-    g_arena = Arena::Create(GameMode::SOCCAR);
+    ArenaConfig arenaConfig;
+    arenaConfig.noBallRot = false;
+    g_arena = Arena::Create(GameMode::SOCCAR, arenaConfig);
     if (!g_arena) return 0;
 
     // Register callbacks
@@ -896,12 +898,13 @@ static void executePhysicsStep(int ticks, bool silent) {
                 }
 
                 // Flip reset gained from ball contact while airborne
-                if (!cs.isOnGround) {
-                    if (cs.hasJumped) {
+                bool isRealGround = cs.isOnGround && (cs.pos.z < 60.0f);
+                if (!isRealGround) {
+                    if (cs.hasJumped || cs.hasFlipped || cs.hasDoubleJumped) {
                         tracker.hadUnlimitedFlip = false;
                     }
-                    if (cs.HasFlipReset() && !tracker.hadUnlimitedFlip && cs.ballHitInfo.isValid &&
-                        (g_arena->tickCount - cs.ballHitInfo.tickCountWhenHit <= 2)) {
+                    if (!tracker.hadUnlimitedFlip && !cs.hasJumped && !cs.hasFlipped && !cs.hasDoubleJumped &&
+                        cs.ballHitInfo.isValid && (g_arena->tickCount - cs.ballHitInfo.tickCountWhenHit <= 4)) {
                         PhysicsEvent ev = {};
                         ev.type = INCIDENT_FLIP_RESET_GAINED;
                         ev.tick = static_cast<uint32_t>(g_arena->tickCount > 0 ? g_arena->tickCount - 1 : 0);
