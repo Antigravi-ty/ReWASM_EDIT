@@ -221,6 +221,9 @@ static float g_threshBallGround = 140.0f;
 static float g_threshBallWall = 160.0f;
 static float g_threshCarBall = 50.0f;
 static uint32_t g_cooldownTicks = 8; // ~66.7ms at 120Hz
+static float g_threshFloorNz = 0.8f;
+static float g_threshNetNz = 0.05f;
+static float g_threshDirDot = 0.0f; // 0.0 = unconstrained
 
 // Simulation Freeze & Scheduled Unfreeze
 static bool g_simulationFrozen = false;
@@ -474,9 +477,9 @@ static uint32_t ClassifyBallHitSurface(const Vec& pos, const Vec& normal, bool i
     }
     // 3-Category Main Surface Classification:
     // 1. Floor: strictly vertical upward normal
-    if (normal.z >= 0.8f) return SUBTYPE_SURFACE_FLOOR;
+    if (normal.z >= g_threshFloorNz) return SUBTYPE_SURFACE_FLOOR;
     // 2. Field Net (sidewalls, backboards, ceiling net: horizontal or downward normal)
-    if (normal.z <= 0.05f) return SUBTYPE_SURFACE_SIDE_WALL;
+    if (normal.z <= g_threshNetNz) return SUBTYPE_SURFACE_SIDE_WALL;
     // 3. Ground Ramp / Transition Curve
     return SUBTYPE_RAMP_GROUND;
 }
@@ -492,6 +495,13 @@ static void onBallWorldCallback(Arena* arena, const Vec& contactPos, const Vec& 
     Vec ballVel = arena->ball ? arena->ball->GetState().vel : Vec(0, 0, 0);
     // Normal Relative Velocity: Delta_Vn = -(v_ball . normal)
     float deltaVn = -(ballVel.Dot(normal));
+    float dirDot = (speed > 1e-4f) ? std::max(0.0f, std::min(1.0f, deltaVn / speed)) : 0.0f;
+
+    // Optional directional unit-vector dot product threshold (suppresses glancing / parallel roll)
+    if (g_threshDirDot > 0.0f && dirDot < g_threshDirDot) {
+        return;
+    }
+
     uint32_t surface = ClassifyBallHitSurface(contactPos, normal, isGoalpost);
     float threshold = (surface == SUBTYPE_SURFACE_FLOOR) ? g_threshBallGround : g_threshBallWall;
 
@@ -517,6 +527,7 @@ static void onBallWorldCallback(Arena* arena, const Vec& contactPos, const Vec& 
     ev.secondaryId = 0xFFFF;
     ev.subType = surface;
     ev.flags = 0;
+    ev.customFloat = dirDot; // Normalized directional dot product (sin(impactAngle))
     PushPhysicsEvent(ev);
 }
 
@@ -1105,6 +1116,19 @@ void physics_setImpactThresholds(float ballGround, float ballWall, float carBall
     g_threshBallWall = ballWall;
     g_threshCarBall = carBall;
     g_cooldownTicks = cooldownTicks;
+}
+
+void physics_setSurfaceTaxonomyThresholds(float floorNz, float netNz) {
+    g_threshFloorNz = floorNz;
+    g_threshNetNz = netNz;
+}
+
+void physics_setDirectionDotThreshold(float minDirDot) {
+    g_threshDirDot = minDirDot;
+}
+
+float physics_getDirectionDotThreshold() {
+    return g_threshDirDot;
 }
 
 // Ball Prediction API (up to 5.0 seconds = 600 ticks @ 120Hz)
