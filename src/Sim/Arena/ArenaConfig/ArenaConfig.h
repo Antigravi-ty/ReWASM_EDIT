@@ -28,8 +28,10 @@ struct ArenaConfig {
 	float
 		maxAABBLen = 370;
 
-	// Ball rotation updates are skipped to improve performance
-	// Disabled in snowday
+	// Ball rotation (angular velocity & spin).
+	// In upstream RocketSim for headless bot training, this defaulted to true to shave CPU cycles.
+	// For interactive Rocket League gameplay, this MUST remain FALSE so that ball angular velocity,
+	// aerodynamic spin, bounce spin curve, and rotational physics are fully simulated by Bullet.
 	bool noBallRot = false;
 
 	// Use a custom broadphase designed for RocketSim

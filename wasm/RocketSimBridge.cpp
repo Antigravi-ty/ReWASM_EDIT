@@ -780,6 +780,8 @@ int physics_createArena() {
         g_carTrackers[i] = CarActionTracker();
     }
 
+    // Initialize arena with full physical rotation enabled
+    // Real-time gameplay requires ball angular velocity & spin simulation (noBallRot = false)
     ArenaConfig arenaConfig;
     arenaConfig.noBallRot = false;
     g_arena = Arena::Create(GameMode::SOCCAR, arenaConfig);
