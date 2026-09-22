@@ -22,6 +22,7 @@
 #include "Sim/Car/Car.h"
 #include "Sim/Ball/Ball.h"
 #include "Sim/BallPredTracker/BallPredTracker.h"
+#include "BulletLink.h"
 
 using namespace RocketSim;
 
@@ -681,7 +682,7 @@ static void syncStateBuffer() {
         // Wheel suspension & contact
         for (int w = 0; w < 4; w++) {
             const btWheelInfoRL& wheel = car->_bulletVehicle.m_wheelInfo[w];
-            pod.wheels[w].susLength = wheel.m_raycastInfo.m_suspensionLength;
+            pod.wheels[w].susLength = wheel.m_raycastInfo.m_suspensionLength * BT_TO_UU;
             pod.wheels[w].steerAngle = wheel.m_steerAngle;
             pod.wheels[w].hasContact = wheel.m_raycastInfo.m_isInContact ? 1.0f : 0.0f;
         }
