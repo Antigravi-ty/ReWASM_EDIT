@@ -713,6 +713,11 @@ static void syncStateBuffer() {
         pod.groundNormalZ = groundNormal.z();
     }
 
+    // Zero out inactive car slots
+    for (size_t i = g_cars.size(); i < MAX_ARENA_CARS; i++) {
+        std::memset(&g_state.cars[i], 0, sizeof(CarStatePod));
+    }
+
     // Boost pads
     const auto& pads = g_arena->GetBoostPads();
     for (size_t i = 0; i < pads.size() && i < NUM_ARENA_PADS; i++) {
@@ -1300,14 +1305,24 @@ float* physics_getPadInfoPtr() {
     return g_padInfoBuffer;
 }
 
+// Helper to resolve standard 6 Rocket League hitbox presets
+static const CarConfig& getCarConfigForIndex(int hitboxIndex) {
+    switch (hitboxIndex) {
+        case 1: return CAR_CONFIG_DOMINUS;
+        case 2: return CAR_CONFIG_PLANK;    // Batmobile (Plank)
+        case 3: return CAR_CONFIG_BREAKOUT;
+        case 4: return CAR_CONFIG_HYBRID;
+        case 5: return CAR_CONFIG_MERC;
+        case 0:
+        default: return CAR_CONFIG_OCTANE;
+    }
+}
+
 // Car Management
 int physics_addCar(int team, int hitboxIndex) {
     if (!g_arena || g_cars.size() >= MAX_ARENA_CARS) return -1;
 
-    CarConfig config = CAR_CONFIG_OCTANE;
-    if (hitboxIndex == 1) {
-        config = CAR_CONFIG_DOMINUS;
-    }
+    const CarConfig& config = getCarConfigForIndex(hitboxIndex);
 
     Car* car = g_arena->AddCar(static_cast<Team>(team), config);
     if (!car) return -1;
@@ -1317,9 +1332,67 @@ int physics_addCar(int team, int hitboxIndex) {
     return static_cast<int>(g_cars.size() - 1);
 }
 
+int physics_removeCar(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
+
+    Car* car = g_cars[carIndex];
+    if (!car) return 0;
+
+    bool ok = g_arena->RemoveCar(car);
+    g_cars.erase(g_cars.begin() + carIndex);
+    syncStateBuffer();
+    return ok ? 1 : 0;
+}
+
+int physics_setCarHitbox(int carIndex, int hitboxIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
+
+    Car* oldCar = g_cars[carIndex];
+    if (!oldCar) return 0;
+
+    CarState state = oldCar->GetState();
+    Team team = oldCar->team;
+
+    // Remove old car rigid body from arena
+    g_arena->RemoveCar(oldCar);
+
+    // Create new car with desired hitbox configuration
+    const CarConfig& config = getCarConfigForIndex(hitboxIndex);
+    Car* newCar = g_arena->AddCar(team, config);
+    if (!newCar) return 0;
+
+    // Restore exact dynamic physical state (position, rotation, velocities, boost)
+    newCar->SetState(state);
+    g_cars[carIndex] = newCar;
+
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_demolishCar(int carIndex, float respawnDelay) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
+    Car* car = g_cars[carIndex];
+    if (!car) return 0;
+    car->Demolish(respawnDelay > 0.0f ? respawnDelay : RLConst::DEMO_RESPAWN_TIME);
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_respawnCar(int carIndex, int seed, float boostAmount) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
+    Car* car = g_cars[carIndex];
+    if (!car) return 0;
+    car->Respawn(g_arena->gameMode, seed, boostAmount >= 0.0f ? boostAmount : RLConst::BOOST_SPAWN_AMOUNT);
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_getCarCount() {
+    return static_cast<int>(g_cars.size());
+}
+
 void* physics_getCarConfig(int hitboxIndex) {
-    if (hitboxIndex == 1) return (void*)&CAR_CONFIG_DOMINUS;
-    return (void*)&CAR_CONFIG_OCTANE;
+    return (void*)&getCarConfigForIndex(hitboxIndex);
 }
 
 void physics_setCarState(int carIndex, float* statePtr) {
