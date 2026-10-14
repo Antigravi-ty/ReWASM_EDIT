@@ -192,7 +192,17 @@ void _UpdateCellsDynamic(btRSBroadphase* _this, btRSBroadphaseProxy* proxy, int 
 			for (int ck = mnk; ck <= mxk; ck++) {
 				auto& cell = _this->GetCell(ci, cj, ck);
 				if (ADD) {
-					cell.dynHandles.push_back(proxy);
+					auto it = std::lower_bound(
+						cell.dynHandles.begin(),
+						cell.dynHandles.end(),
+						proxy,
+						[](const btRSBroadphaseProxy* a, const btRSBroadphaseProxy* b) {
+							return a->m_uniqueId < b->m_uniqueId;
+						}
+					);
+					if (it == cell.dynHandles.end() || *it != proxy) {
+						cell.dynHandles.insert(it, proxy);
+					}
 				} else {
 					cell.RemoveDyn(proxy);
 				}
@@ -304,19 +314,15 @@ void btRSBroadphase::setAabb(btBroadphaseProxy* proxy, const btVector3& aabbMin,
 			sbp->cellIdx = newIndex;
 
 			if (oldIndex != newIndex) {
+				_UpdateCellsDynamic<false>(this, sbp, sbp->iIdx, sbp->jIdx, sbp->kIdx);
 
-				if (numDynProxies > 1) {
-					_UpdateCellsDynamic<false>(this, sbp, sbp->iIdx, sbp->jIdx, sbp->kIdx);
+				int iNew, jNew, kNew;
+				GetCellIndices(aabbMin, iNew, jNew, kNew);
+				sbp->iIdx = iNew;
+				sbp->jIdx = jNew;
+				sbp->kIdx = kNew;
 
-					// TODO: Can determine newIndex from these
-					int iNew, jNew, kNew;
-					GetCellIndices(aabbMin, iNew, jNew, kNew);
-					sbp->iIdx = iNew;
-					sbp->jIdx = jNew;
-					sbp->kIdx = kNew;
-
-					_UpdateCellsDynamic<true>(this, sbp, iNew, jNew, kNew);
-				}
+				_UpdateCellsDynamic<true>(this, sbp, iNew, jNew, kNew);
 			}
 		}
 	}

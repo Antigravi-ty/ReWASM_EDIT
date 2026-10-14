@@ -40,8 +40,11 @@ void Ball::SetState(const BallState& state) {
 	newTransform.setOrigin(state.pos * UU_TO_BT);
 	newTransform.setBasis(state.rotMat);
 	_rigidBody.setWorldTransform(newTransform);
+	_rigidBody.setInterpolationWorldTransform(newTransform);
 	_rigidBody.setLinearVelocity(state.vel * UU_TO_BT);
+	_rigidBody.setInterpolationLinearVelocity(_rigidBody.getLinearVelocity());
 	_rigidBody.setAngularVelocity(state.angVel);
+	_rigidBody.setInterpolationAngularVelocity(_rigidBody.getAngularVelocity());
 	_rigidBody.updateInertiaTensor();
 	if (!state.vel.IsZero() || !state.angVel.IsZero())
 		_rigidBody.setActivationState(ACTIVE_TAG);

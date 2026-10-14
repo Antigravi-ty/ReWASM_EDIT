@@ -377,10 +377,21 @@ static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
 
     if (g_arena->ball) {
         g_arena->ball->SetState(snap.ballState);
+        g_arena->ball->_internalState.tickCountSinceUpdate = snap.ballState.tickCountSinceUpdate;
         g_arena->ball->_rigidBody.setWorldTransform(snap.ballTransform);
+        g_arena->ball->_rigidBody.setInterpolationWorldTransform(snap.ballTransform);
         g_arena->ball->_rigidBody.setLinearVelocity(snap.ballLinearVelocity);
+        g_arena->ball->_rigidBody.setInterpolationLinearVelocity(snap.ballLinearVelocity);
         g_arena->ball->_rigidBody.setAngularVelocity(snap.ballAngularVelocity);
+        g_arena->ball->_rigidBody.setInterpolationAngularVelocity(snap.ballAngularVelocity);
+        g_arena->ball->_rigidBody.updateInertiaTensor();
         g_arena->ball->_rigidBody.clearForces();
+        if (snap.ballLinearVelocity.length2() == 0 && snap.ballAngularVelocity.length2() == 0) {
+            g_arena->ball->_rigidBody.setActivationState(ISLAND_SLEEPING);
+        } else {
+            g_arena->ball->_rigidBody.setActivationState(ACTIVE_TAG);
+        }
+        g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
     }
 
     const auto& pads = g_arena->GetBoostPads();
@@ -398,14 +409,33 @@ static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
         car->team = static_cast<Team>(snap.cars[i].team);
         car->id = snap.cars[i].id;
         car->controls = snap.cars[i].controls;
+
+        float* ctrlPtr = &g_controlsBuffer[i * CONTROLS_STRIDE];
+        ctrlPtr[0] = car->controls.throttle;
+        ctrlPtr[1] = car->controls.steer;
+        ctrlPtr[2] = car->controls.pitch;
+        ctrlPtr[3] = car->controls.yaw;
+        ctrlPtr[4] = car->controls.roll;
+        ctrlPtr[5] = car->controls.jump ? 1.0f : 0.0f;
+        ctrlPtr[6] = car->controls.boost ? 1.0f : 0.0f;
+        ctrlPtr[7] = car->controls.handbrake ? 1.0f : 0.0f;
+
         car->SetState(snap.cars[i].state);
+        car->_internalState.tickCountSinceUpdate = snap.cars[i].state.tickCountSinceUpdate;
+        car->_internalState.rotMat = snap.cars[i].rbTransform.getBasis();
         car->_rigidBody.setWorldTransform(snap.cars[i].rbTransform);
+        car->_rigidBody.setInterpolationWorldTransform(snap.cars[i].rbTransform);
         car->_rigidBody.setLinearVelocity(snap.cars[i].rbLinearVelocity);
+        car->_rigidBody.setInterpolationLinearVelocity(snap.cars[i].rbLinearVelocity);
         car->_rigidBody.setAngularVelocity(snap.cars[i].rbAngularVelocity);
+        car->_rigidBody.setInterpolationAngularVelocity(snap.cars[i].rbAngularVelocity);
+        car->_rigidBody.updateInertiaTensor();
         car->_rigidBody.clearForces();
         for (int w = 0; w < 4; w++) {
             car->_bulletVehicle.m_wheelInfo[w] = snap.cars[i].wheels[w];
+            car->_bulletVehicle.m_wheelInfo[w].m_raycastInfo.m_groundObject = nullptr;
         }
+        g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
     }
 
     // Purge persistent collision manifolds in Bullet collision dispatcher
@@ -418,6 +448,10 @@ static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
                 manifold->clearManifold();
             }
         }
+    }
+
+    if (g_arena->_bulletWorld.getConstraintSolver()) {
+        g_arena->_bulletWorld.getConstraintSolver()->reset();
     }
 
     syncStateBuffer();
@@ -1364,6 +1398,7 @@ int physics_setCarHitbox(int carIndex, int hitboxIndex) {
 
     // Restore exact dynamic physical state (position, rotation, velocities, boost)
     newCar->SetState(state);
+    g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
     g_cars[carIndex] = newCar;
 
     syncStateBuffer();
@@ -1384,6 +1419,7 @@ int physics_respawnCar(int carIndex, int seed, float boostAmount) {
     Car* car = g_cars[carIndex];
     if (!car) return 0;
     car->Respawn(g_arena->gameMode, seed, boostAmount >= 0.0f ? boostAmount : RLConst::BOOST_SPAWN_AMOUNT);
+    g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
     syncStateBuffer();
     return 1;
 }
@@ -1416,6 +1452,7 @@ void physics_setCarState(int carIndex, float* statePtr) {
     cs.isFlipping = statePtr[24] > 0.5f;
 
     car->SetState(cs);
+    g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
     syncStateBuffer();
 }
 
@@ -1432,6 +1469,7 @@ void physics_setBallState(int carIndexOrNull, float* statePtr) {
     bs.angVel = Vec(actualStatePtr[15], actualStatePtr[16], actualStatePtr[17]);
 
     g_arena->ball->SetState(bs);
+    g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
     syncStateBuffer();
 }
 
@@ -1490,6 +1528,7 @@ int physics_controlBall(int carIndex, int modeIndex) {
     }
 
     g_arena->ball->SetState(bs);
+    g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
     syncStateBuffer();
     return 1;
 }

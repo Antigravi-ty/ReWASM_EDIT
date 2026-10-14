@@ -759,6 +759,24 @@ void Arena::Step(int ticksToSimulate) {
 
 		ball->_FinishPhysicsTick(_mutatorConfig);
 
+		ball->_rigidBody.setInterpolationWorldTransform(ball->_rigidBody.getWorldTransform());
+		ball->_rigidBody.setInterpolationLinearVelocity(ball->_rigidBody.getLinearVelocity());
+		ball->_rigidBody.setInterpolationAngularVelocity(ball->_rigidBody.getAngularVelocity());
+		ball->_rigidBody.updateInertiaTensor();
+		_bulletWorld.updateSingleAabb(&ball->_rigidBody);
+
+		for (Car* car : _cars) {
+			car->_rigidBody.setInterpolationWorldTransform(car->_rigidBody.getWorldTransform());
+			car->_rigidBody.setInterpolationLinearVelocity(car->_rigidBody.getLinearVelocity());
+			car->_rigidBody.setInterpolationAngularVelocity(car->_rigidBody.getAngularVelocity());
+			car->_rigidBody.updateInertiaTensor();
+			_bulletWorld.updateSingleAabb(&car->_rigidBody);
+		}
+
+		if (_bulletWorld.getConstraintSolver()) {
+			_bulletWorld.getConstraintSolver()->reset();
+		}
+
 		// Sync tiles state after the tick ends.
 		// We don't want to sync the state on tile damage, 
 		//	because that would cause the ball to immediately fall through the newly-broken tile.

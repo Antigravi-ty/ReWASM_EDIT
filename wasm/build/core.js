@@ -35,7 +35,7 @@ var ENVIRONMENT_IS_NODE = globalThis.process?.versions?.node && globalThis.proce
 if (ENVIRONMENT_IS_NODE) {
   // When building an ES module `require` is not normally available.
   // We need to use `createRequire()` to construct the require()` function.
-  const {createRequire} = await import("node:module");
+  const {createRequire} = await ((import("node:module")));
   /** @suppress{duplicate} */ var require = createRequire(import.meta.url);
 }
 
@@ -565,7 +565,7 @@ function _clock_time_get(clk_id, ignored_precision, ptime) {
     return 52;
   }
   // "now" is in ms, and wasi times are in ns.
-  var nsec = Math.round(now * 1e3 * 1e3);
+  var nsec = Math.round(now * 1e6);
   HEAP64[((ptime) >> 3)] = BigInt(nsec);
   return 0;
 }
