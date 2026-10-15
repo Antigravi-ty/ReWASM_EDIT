@@ -283,6 +283,62 @@ struct CarActionTracker {
 };
 static CarActionTracker g_carTrackers[MAX_ARENA_CARS];
 
+// Per-car linear factor, gravity scale, and collision mask overrides
+struct CarPhysicsOverride {
+    bool active = false;
+    btVector3 linearFactor = btVector3(1.0f, 1.0f, 1.0f);
+    float gravityScale = 1.0f;
+    btVector3 lockedOriginBT = btVector3(0.0f, 0.0f, 0.0f);
+};
+static CarPhysicsOverride g_carOverrides[MAX_ARENA_CARS];
+
+struct CarCollisionMask {
+    bool interactWithBall = true;
+    bool interactWithCars = true;
+};
+static CarCollisionMask g_carCollisionMasks[MAX_ARENA_CARS];
+static bool g_hasCustomCollisionMask = false;
+
+static int getCarIndexFast(const Car* car) {
+    if (!car) return -1;
+    for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+        if (g_cars[i] == car) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+struct BridgeOverlapFilterCallback : public btOverlapFilterCallback {
+    virtual bool needBroadphaseCollision(btBroadphaseProxy* proxy0, btBroadphaseProxy* proxy1) const override {
+        bool collides = (proxy0->m_collisionFilterGroup & proxy1->m_collisionFilterMask) != 0;
+        collides = collides && (proxy1->m_collisionFilterGroup & proxy0->m_collisionFilterMask);
+        if (!collides || !g_hasCustomCollisionMask) return collides;
+
+        btCollisionObject* obj0 = static_cast<btCollisionObject*>(proxy0->m_clientObject);
+        btCollisionObject* obj1 = static_cast<btCollisionObject*>(proxy1->m_clientObject);
+        if (!obj0 || !obj1) return true;
+
+        int u0 = obj0->getUserIndex();
+        int u1 = obj1->getUserIndex();
+
+        if (u0 == BT_USERINFO_TYPE_CAR && u1 == BT_USERINFO_TYPE_BALL) {
+            int idx = getCarIndexFast(static_cast<const Car*>(obj0->getUserPointer()));
+            if (idx >= 0 && !g_carCollisionMasks[idx].interactWithBall) return false;
+        } else if (u1 == BT_USERINFO_TYPE_CAR && u0 == BT_USERINFO_TYPE_BALL) {
+            int idx = getCarIndexFast(static_cast<const Car*>(obj1->getUserPointer()));
+            if (idx >= 0 && !g_carCollisionMasks[idx].interactWithBall) return false;
+        } else if (u0 == BT_USERINFO_TYPE_CAR && u1 == BT_USERINFO_TYPE_CAR) {
+            int idx0 = getCarIndexFast(static_cast<const Car*>(obj0->getUserPointer()));
+            int idx1 = getCarIndexFast(static_cast<const Car*>(obj1->getUserPointer()));
+            if ((idx0 >= 0 && !g_carCollisionMasks[idx0].interactWithCars) ||
+                (idx1 >= 0 && !g_carCollisionMasks[idx1].interactWithCars)) {
+                return false;
+            }
+        }
+        return true;
+    }
+};
+static BridgeOverlapFilterCallback g_bridgeOverlapFilter;
+
 // Ball Prediction Pipeline (up to 5.0 seconds = 600 ticks @ 120Hz)
 static constexpr size_t MAX_BALL_PRED_TICKS = 600;
 #pragma pack(push, 4)
@@ -818,6 +874,23 @@ static void syncStateBuffer() {
     g_state.possessionBluePoints = static_cast<float>(g_possession.bluePoints);
     g_state.possessionOrangePoints = static_cast<float>(g_possession.orangePoints);
     g_state.possessionDuration = g_possession.activePossessionTime;
+
+    // Populate reserved[0..7] (floats 416..423) with PPO obs_v3 fields for Car 0 and Car 1
+    std::memset(g_state.reserved, 0, sizeof(g_state.reserved));
+    if (g_cars.size() > 0 && g_cars[0]) {
+        const CarState& cs0 = g_cars[0]->_internalState;
+        g_state.reserved[0] = cs0.isJumping ? 1.0f : 0.0f;
+        g_state.reserved[1] = cs0.airTime;
+        g_state.reserved[4] = cs0.jumpTime;
+        g_state.reserved[5] = cs0.airTimeSinceJump;
+    }
+    if (g_cars.size() > 1 && g_cars[1]) {
+        const CarState& cs1 = g_cars[1]->_internalState;
+        g_state.reserved[2] = cs1.isJumping ? 1.0f : 0.0f;
+        g_state.reserved[3] = cs1.airTime;
+        g_state.reserved[6] = cs1.jumpTime;
+        g_state.reserved[7] = cs1.airTimeSinceJump;
+    }
 }
 
 extern "C" {
@@ -872,9 +945,12 @@ int physics_createArena() {
     for (int p = 0; p < NUM_ARENA_PADS; p++) g_wasPadActive[p] = true;
     g_possession.reportingEnabled = true;
 
+    g_hasCustomCollisionMask = false;
     for (int i = 0; i < MAX_ARENA_CARS; i++) {
         g_carLastBallHitTick[i] = 0;
         g_carTrackers[i] = CarActionTracker();
+        g_carOverrides[i] = CarPhysicsOverride();
+        g_carCollisionMasks[i] = CarCollisionMask();
     }
 
     // Initialize arena with full physical rotation enabled
@@ -883,6 +959,10 @@ int physics_createArena() {
     arenaConfig.noBallRot = false;
     g_arena = Arena::Create(GameMode::SOCCAR, arenaConfig);
     if (!g_arena) return 0;
+
+    if (g_arena->_bulletWorldParams.overlappingPairCache) {
+        g_arena->_bulletWorldParams.overlappingPairCache->setOverlapFilterCallback(&g_bridgeOverlapFilter);
+    }
 
     // Register callbacks
     g_arena->SetGoalScoreCallback(onGoalScoredCallback, nullptr);
@@ -942,9 +1022,34 @@ static void executePhysicsStep(int ticks, bool silent) {
             if (g_unlimitedBoost) {
                 car->_internalState.boost = 100.0f;
             }
+
+            if (g_carOverrides[i].active) {
+                const CarPhysicsOverride& ov = g_carOverrides[i];
+                car->_rigidBody.setLinearFactor(ov.linearFactor);
+                car->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * ov.gravityScale);
+            }
         }
 
         g_arena->Step(1);
+
+        // Enforce locked axes after step (clears residual velocity or position drift on 0-factor axes)
+        for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+            if (!g_carOverrides[i].active) continue;
+            Car* car = g_cars[i];
+            const CarPhysicsOverride& ov = g_carOverrides[i];
+            btVector3 vel = car->_rigidBody.getLinearVelocity() * ov.linearFactor;
+            car->_rigidBody.setLinearVelocity(vel);
+            car->_rigidBody.setInterpolationLinearVelocity(vel);
+            btTransform tr = car->_rigidBody.getWorldTransform();
+            btVector3 orig = tr.getOrigin();
+            if (ov.linearFactor.x() == 0.0f) orig.setX(ov.lockedOriginBT.x());
+            if (ov.linearFactor.y() == 0.0f) orig.setY(ov.lockedOriginBT.y());
+            if (ov.linearFactor.z() == 0.0f) orig.setZ(ov.lockedOriginBT.z());
+            tr.setOrigin(orig);
+            car->_rigidBody.setWorldTransform(tr);
+            car->_rigidBody.setInterpolationWorldTransform(tr);
+            g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
+        }
 
         // Post-goal 30-frame ball flight then freeze inside goal
         if (g_goalIncidentLatched && g_arena->ball) {
@@ -1532,6 +1637,9 @@ void physics_setCarState(int carIndex, float* statePtr) {
     cs.isFlipping = statePtr[24] > 0.5f;
 
     car->SetState(cs);
+    if (g_carOverrides[carIndex].active) {
+        g_carOverrides[carIndex].lockedOriginBT = car->_rigidBody.getWorldTransform().getOrigin();
+    }
     g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
     syncStateBuffer();
 }
@@ -1655,4 +1763,240 @@ int physics_getCurrentPossessionTeam() {
     return g_possession.currentPossessionTeam;
 }
 
-} // extern "C"
+// ============================================================================
+// PPO RLRL101 (obs_v3) Native Getters & Deterministic Kickoff Spawn Reset
+// ============================================================================
+
+int physics_getCarIsJumping(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0;
+    return g_cars[carIndex]->_internalState.isJumping ? 1 : 0;
+}
+
+float physics_getCarAirTime(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0.0f;
+    return g_cars[carIndex]->_internalState.airTime;
+}
+
+float physics_getCarJumpTime(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0.0f;
+    return g_cars[carIndex]->_internalState.jumpTime;
+}
+
+float physics_getCarAirTimeSinceJump(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0.0f;
+    return g_cars[carIndex]->_internalState.airTimeSinceJump;
+}
+
+int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
+    if (!g_arena) return 0;
+    using namespace RLConst;
+
+    int safeSpawnIdx = ((spawnIndex % CAR_SPAWN_LOCATION_AMOUNT) + CAR_SPAWN_LOCATION_AMOUNT) % CAR_SPAWN_LOCATION_AMOUNT;
+
+    // Record existing cars (team + config) and recreate fresh Bullet vehicles for deterministic suspension state
+    struct SavedCarSpec {
+        Team team;
+        CarConfig config;
+    };
+    std::vector<SavedCarSpec> specs;
+    specs.reserve(g_cars.size());
+    for (Car* car : g_cars) {
+        if (car) {
+            specs.push_back({ car->team, car->config });
+            g_arena->RemoveCar(car);
+        }
+    }
+    g_cars.clear();
+    g_arena->_lastCarID = 0;
+
+    int blueIdx = 0;
+    int orangeIdx = 0;
+    for (size_t i = 0; i < specs.size(); i++) {
+        Car* newCar = g_arena->AddCar(specs[i].team, specs[i].config);
+        if (!newCar) continue;
+
+        bool isBlue = (specs[i].team == Team::BLUE);
+        int teamSlot = isBlue ? (blueIdx++) : (orangeIdx++);
+        int locIdx = (safeSpawnIdx + teamSlot) % CAR_SPAWN_LOCATION_AMOUNT;
+        CarSpawnPos spawnPos = CAR_SPAWN_LOCATIONS_SOCCAR[locIdx];
+
+        CarState spawnState;
+        spawnState.boost = g_arena->_mutatorConfig.carSpawnBoostAmount;
+        spawnState.pos = Vec(spawnPos.x, spawnPos.y, CAR_SPAWN_REST_Z);
+        Angle angle = Angle(spawnPos.yawAng, 0.0f, 0.0f);
+        spawnState.isOnGround = true;
+
+        if (!isBlue) {
+            spawnState.pos *= Vec(-1.0f, -1.0f, 1.0f);
+            angle.yaw += M_PI;
+        }
+        spawnState.rotMat = angle.ToRotMat();
+        newCar->SetState(spawnState);
+        newCar->controls = CarControls();
+        g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
+        g_cars.push_back(newCar);
+    }
+
+    // Clear controls buffer
+    std::memset(g_controlsBuffer, 0, sizeof(g_controlsBuffer));
+
+    // Reset ball and boost pads
+    if (g_arena->ball) {
+        g_arena->ball->SetState(BallState());
+        g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+    }
+    for (BoostPad* pad : g_arena->GetBoostPads()) {
+        pad->SetState(BoostPadState());
+    }
+
+    // Clear persistent collision manifolds and solver cache
+    btCollisionDispatcher* dispatcher = (btCollisionDispatcher*)g_arena->_bulletWorld.getDispatcher();
+    if (dispatcher) {
+        int numManifolds = dispatcher->getNumManifolds();
+        for (int m = 0; m < numManifolds; m++) {
+            btPersistentManifold* manifold = dispatcher->getManifoldByIndexInternal(m);
+            if (manifold) manifold->clearManifold();
+        }
+    }
+    if (g_arena->_bulletWorld.getConstraintSolver()) {
+        g_arena->_bulletWorld.getConstraintSolver()->reset();
+    }
+
+    // Step settleTicks silently to allow suspension to settle, then zero velocities
+    if (settleTicks > 0) {
+        bool prevSilent = g_silentResim;
+        g_silentResim = true;
+        g_arena->Step(settleTicks);
+        g_silentResim = prevSilent;
+
+        for (Car* car : g_cars) {
+            if (!car) continue;
+            CarState settled = car->GetState();
+            settled.vel = Vec(0.0f, 0.0f, 0.0f);
+            settled.angVel = Vec(0.0f, 0.0f, 0.0f);
+            car->SetState(settled);
+            car->_rigidBody.clearForces();
+            g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
+        }
+        if (g_arena->ball) {
+            g_arena->ball->SetState(BallState());
+            g_arena->ball->_rigidBody.clearForces();
+            g_arena->ball->_rigidBody.setActivationState(ISLAND_SLEEPING);
+            g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+        }
+    }
+
+    g_arena->tickCount = 0;
+    resetPostGoalLatchState();
+    g_lastBallWorldHitTick = 0;
+    g_firstTouchFired = false;
+    g_lastBallSleeping = true;
+    std::memset(&g_possession, 0, sizeof(PossessionState));
+    for (int p = 0; p < NUM_ARENA_PADS; p++) g_wasPadActive[p] = true;
+    g_possession.reportingEnabled = true;
+
+    for (int i = 0; i < MAX_ARENA_CARS; i++) {
+        g_carLastBallHitTick[i] = 0;
+        g_carTrackers[i] = CarActionTracker();
+    }
+
+    syncStateBuffer();
+    return 1;
+}
+
+// ============================================================================
+// Stage 2 Multi-Team Extensions: LinearFactor/Gravity, CollisionMask, Mutators, Replay Offset
+// ============================================================================
+
+int physics_setCarLinearFactorAndGravity(int carIndex, float fx, float fy, float fz, float gravityScale) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0;
+
+    Car* car = g_cars[carIndex];
+    CarPhysicsOverride& ov = g_carOverrides[carIndex];
+    ov.linearFactor = btVector3(fx, fy, fz);
+    ov.gravityScale = gravityScale;
+    ov.lockedOriginBT = car->_rigidBody.getWorldTransform().getOrigin();
+    ov.active = !(fx == 1.0f && fy == 1.0f && fz == 1.0f && gravityScale == 1.0f);
+
+    car->_rigidBody.setLinearFactor(ov.linearFactor);
+    car->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * gravityScale);
+    btVector3 vel = car->_rigidBody.getLinearVelocity() * ov.linearFactor;
+    car->_rigidBody.setLinearVelocity(vel);
+    car->_rigidBody.setInterpolationLinearVelocity(vel);
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_setCarCollisionMask(int carIndex, int interactWithBall, int interactWithCars) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+
+    g_carCollisionMasks[carIndex].interactWithBall = (interactWithBall != 0);
+    g_carCollisionMasks[carIndex].interactWithCars = (interactWithCars != 0);
+
+    g_hasCustomCollisionMask = false;
+    for (int i = 0; i < MAX_ARENA_CARS; i++) {
+        if (!g_carCollisionMasks[i].interactWithBall || !g_carCollisionMasks[i].interactWithCars) {
+            g_hasCustomCollisionMask = true;
+            break;
+        }
+    }
+
+    if (carIndex < static_cast<int>(g_cars.size()) && g_cars[carIndex]) {
+        Car* car = g_cars[carIndex];
+        if (car->_rigidBody.getBroadphaseProxy() && g_arena->_bulletWorldParams.overlappingPairCache) {
+            g_arena->_bulletWorldParams.overlappingPairCache->cleanProxyFromPairs(
+                car->_rigidBody.getBroadphaseProxy(),
+                g_arena->_bulletWorld.getDispatcher()
+            );
+        }
+    }
+    return 1;
+}
+
+int physics_setArenaMutators(float gravityZ, float boostAccelGround, float boostAccelAir, float ballMaxSpeed, float ballBounciness) {
+    if (!g_arena) return 0;
+    MutatorConfig mc = g_arena->GetMutatorConfig();
+    mc.gravity = Vec(0.0f, 0.0f, gravityZ);
+    if (boostAccelGround > 0.0f) mc.boostAccelGround = boostAccelGround;
+    if (boostAccelAir > 0.0f) mc.boostAccelAir = boostAccelAir;
+    if (ballMaxSpeed > 0.0f) mc.ballMaxSpeed = ballMaxSpeed;
+    if (ballBounciness >= 0.0f) mc.ballWorldRestitution = ballBounciness;
+    g_arena->SetMutatorConfig(mc);
+
+    // Re-apply per-car gravity scale overrides
+    for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+        if (g_carOverrides[i].active && g_cars[i]) {
+            g_cars[i]->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * g_carOverrides[i].gravityScale);
+        }
+    }
+    return 1;
+}
+
+uint32_t physics_getReplayFrameCount() {
+    if (!g_replayBuffer) return 0;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    return hdr->totalFrames;
+}
+
+float* physics_getReplayFramePtrByOffset(int ticksAgo) {
+    if (!g_replayBuffer) return nullptr;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    if (hdr->totalFrames == 0) return nullptr;
+    int targetIdx = static_cast<int>(hdr->totalFrames) - 1 - std::max(0, ticksAgo);
+    targetIdx = std::clamp(targetIdx, 0, static_cast<int>(hdr->totalFrames) - 1);
+    size_t byteOffset = sizeof(ReplayHeader) + static_cast<size_t>(targetIdx) * sizeof(GameStateBufferPod);
+    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_STORAGE_BYTES) return nullptr;
+    return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
+}
+
+float* physics_getReplayFramePtrByIndex(int frameIndex) {
+    if (!g_replayBuffer) return nullptr;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    if (hdr->totalFrames == 0) return nullptr;
+    int targetIdx = std::clamp(frameIndex, 0, static_cast<int>(hdr->totalFrames) - 1);
+    size_t byteOffset = sizeof(ReplayHeader) + static_cast<size_t>(targetIdx) * sizeof(GameStateBufferPod);
+    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_STORAGE_BYTES) return nullptr;
+    return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
+}
+
+} // extern "C" 

@@ -69,7 +69,7 @@ exported_functions = (
     "'_physics_isBallSleeping','_physics_setSimulationFrozen',"
     "'_physics_setPossessionReportingEnabled','_physics_getPossessionStats',"
     "'_physics_initReplayBuffer','_physics_clearReplayBuffer',"
-    "'_physics_getReplayBufferPtr','_physics_getReplayBufferSize','_physics_recordReplayFrame']"
+    "'_physics_getReplayBufferPtr','_physics_getReplayBufferSize','_physics_recordReplayFrame','_physics_getCarIsJumping','_physics_getCarAirTime','_physics_getCarJumpTime','_physics_getCarAirTimeSinceJump','_physics_resetKickoffAtSpawn','_physics_setCarLinearFactorAndGravity','_physics_setCarCollisionMask','_physics_setArenaMutators','_physics_getReplayFrameCount','_physics_getReplayFramePtrByOffset','_physics_getReplayFramePtrByIndex']"
 )
 
 exported_runtime_methods = (
