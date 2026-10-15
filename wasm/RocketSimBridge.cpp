@@ -116,22 +116,43 @@ static constexpr uint32_t INCIDENT_FLIP_RESET_GAINED = 0x0F;
 static constexpr uint32_t INCIDENT_BALL_STATE_CHANGE = 0x10;
 static constexpr uint32_t INCIDENT_POSSESSION_CHANGE = 0x11;
 
-// Signal Events (0x80..0x9F)
+// Server Authoritative Signal Events (0x80..0xBF)
 static constexpr uint32_t SIGNAL_MATCH_START = 0x80;
+static constexpr uint32_t SIGNAL_KICKOFF_WILL_START = 0x81;
 static constexpr uint32_t SIGNAL_KICKOFF_PREPARE = 0x81;
+static constexpr uint32_t SIGNAL_KICKOFF_START = 0x82;
 static constexpr uint32_t SIGNAL_KICKOFF_GO = 0x82;
 static constexpr uint32_t SIGNAL_COUNTDOWN_TICK = 0x83;
+static constexpr uint32_t SIGNAL_MATCH_PAUSED = 0x84;
 static constexpr uint32_t SIGNAL_MATCH_PAUSE = 0x84;
-static constexpr uint32_t SIGNAL_MATCH_RESUME = 0x85;
-static constexpr uint32_t SIGNAL_GOAL_REPLAY_WILL_START = 0x86;
-static constexpr uint32_t SIGNAL_GOAL_REPLAY_START = 0x87;
-static constexpr uint32_t SIGNAL_KICKOFF_WILL_START = 0x88;
-static constexpr uint32_t SIGNAL_OVERTIME_START = 0x89;
-static constexpr uint32_t SIGNAL_TIME_ALERT_60S = 0x8A;
-static constexpr uint32_t SIGNAL_TIME_ALERT_30S = 0x8B;
-static constexpr uint32_t SIGNAL_PLAYER_ENTER_ARENA = 0x8C;
-static constexpr uint32_t SIGNAL_PLAYER_LEAVE_ARENA = 0x8D;
-static constexpr uint32_t SIGNAL_FORFEIT_VOTE = 0x8E;
+static constexpr uint32_t SIGNAL_MATCH_WILL_RESUME = 0x85;
+static constexpr uint32_t SIGNAL_MATCH_RESUMED = 0x86;
+static constexpr uint32_t SIGNAL_MATCH_RESUME = 0x86;
+static constexpr uint32_t SIGNAL_GOAL_REPLAY_WILL_START = 0x87;
+static constexpr uint32_t SIGNAL_GOAL_REPLAY_START = 0x88;
+static constexpr uint32_t SIGNAL_GOAL_REPLAY_WILL_END = 0x89;
+static constexpr uint32_t SIGNAL_GOAL_REPLAY_END = 0x8A;
+static constexpr uint32_t SIGNAL_OVERTIME_START = 0x8B;
+static constexpr uint32_t SIGNAL_TIME_ALERT_60S = 0x8C;
+static constexpr uint32_t SIGNAL_TIME_ALERT_30S = 0x8D;
+static constexpr uint32_t SIGNAL_PLAYER_JOINED = 0x8E;
+static constexpr uint32_t SIGNAL_PLAYER_ENTER_ARENA = 0x8E;
+static constexpr uint32_t SIGNAL_PLAYER_LEFT = 0x8F;
+static constexpr uint32_t SIGNAL_PLAYER_LEAVE_ARENA = 0x8F;
+static constexpr uint32_t SIGNAL_FORFEIT_VOTE = 0x90;
+static constexpr uint32_t SIGNAL_SCORE_UPDATED = 0x91;
+static constexpr uint32_t SIGNAL_BALL_RESET = 0x92;
+static constexpr uint32_t SIGNAL_ROUND_STARTED = 0x93;
+static constexpr uint32_t SIGNAL_MATCH_CREATED = 0x94;
+static constexpr uint32_t SIGNAL_MATCH_INITIALIZED = 0x95;
+static constexpr uint32_t SIGNAL_MATCH_PREPARE = 0x96;
+static constexpr uint32_t SIGNAL_MATCH_ENDED = 0x97;
+static constexpr uint32_t SIGNAL_MATCH_DESTROYED = 0x98;
+static constexpr uint32_t SIGNAL_PODIUM_START = 0x99;
+static constexpr uint32_t SIGNAL_PLAYER_LOADOUT_UPDATED = 0x9A;
+static constexpr uint32_t SIGNAL_PLAYER_SLOT_UPDATED = 0x9B;
+static constexpr uint32_t SIGNAL_DEMOLITION = 0x9C;
+static constexpr uint32_t SIGNAL_CLOCK_UPDATED_SECONDS = 0x9D;
 
 // Classified Ball Hit Surface Subtypes
 static constexpr uint32_t SUBTYPE_SURFACE_FLOOR = 1;
@@ -148,7 +169,7 @@ static constexpr uint32_t SUBTYPE_OTHER_CURVE = 10;
 // Strict 64-byte (CPU Cache-Line Aligned) Physics Event Structure
 #pragma pack(push, 4)
 struct alignas(64) PhysicsEvent {
-    uint32_t type;          // [Word 0] Event type (0x01..0x1F: Incident, 0x80..0x9F: Signal)
+    uint32_t type;          // [Word 0] Event type (0x01..0x3F: Incident, 0x80..0xBF: Signal)
     uint32_t tick;          // [Word 1] Physics tick timestamp
     float posX;             // [Word 2] World X in Unreal Units
     float posY;             // [Word 3] World Y in Unreal Units
@@ -212,6 +233,24 @@ static int g_goalScoredFlag = 0;
 static bool g_unlimitedBoost = false;
 static bool g_firstTouchFired = false;
 static bool g_lastBallSleeping = true;
+
+// Post-goal 30-frame ball flight & freeze latch (cleared idempotently by Goal Replay Start / Kickoff Will Start)
+static constexpr uint32_t POST_GOAL_BALL_FLIGHT_TICKS = 30;
+static bool g_goalIncidentLatched = false;
+static uint32_t g_goalScoredAtTick = 0;
+static bool g_ballFrozenPostGoal = false;
+static BallState g_frozenBallState = {};
+
+static void resetPostGoalLatchState() {
+    g_goalIncidentLatched = false;
+    g_goalScoredAtTick = 0;
+    g_ballFrozenPostGoal = false;
+    g_goalScoredFlag = 0;
+    g_state.header.goalScoredFlag = 0.0f;
+    if (g_arena && g_arena->ball) {
+        g_arena->ball->_rigidBody.setActivationState(ACTIVE_TAG);
+    }
+}
 
 // Debounce tick memory
 static uint64_t g_lastBallWorldHitTick = 0;
@@ -392,6 +431,10 @@ static void deserializeFromSnapshot(const ArenaSnapshotPod& snap) {
             g_arena->ball->_rigidBody.setActivationState(ACTIVE_TAG);
         }
         g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+        if (!g_arena->IsBallScored()) {
+            g_goalIncidentLatched = false;
+            g_ballFrozenPostGoal = false;
+        }
     }
 
     const auto& pads = g_arena->GetBoostPads();
@@ -467,14 +510,21 @@ static int getCarIndex(Car* car) {
 
 // Goal score callback
 static void onGoalScoredCallback(Arena* arena, Team scoringTeam, void* userInfo) {
+    if (g_goalIncidentLatched) {
+        return;
+    }
+    g_goalIncidentLatched = true;
+    g_goalScoredAtTick = static_cast<uint32_t>(arena ? arena->tickCount : 0);
+    g_ballFrozenPostGoal = false;
+
     g_goalScoredFlag = (scoringTeam == Team::BLUE) ? 1 : 2;
     g_state.header.goalScoredFlag = static_cast<float>(g_goalScoredFlag);
 
     if (!g_silentResim) {
         PhysicsEvent ev = {};
         ev.type = INCIDENT_GOAL_SCORED;
-        ev.tick = static_cast<uint32_t>(arena->tickCount > 0 ? arena->tickCount - 1 : 0);
-        if (arena->ball) {
+        ev.tick = static_cast<uint32_t>(arena && arena->tickCount > 0 ? arena->tickCount - 1 : 0);
+        if (arena && arena->ball) {
             Vec p = arena->ball->GetState().pos;
             ev.posX = p.x; ev.posY = p.y; ev.posZ = p.z;
             ev.speed = arena->ball->GetState().vel.Length();
@@ -811,7 +861,7 @@ int physics_createArena() {
         g_arena = nullptr;
     }
     g_cars.clear();
-    g_goalScoredFlag = 0;
+    resetPostGoalLatchState();
     g_lastBallWorldHitTick = 0;
     g_firstTouchFired = false;
     g_lastBallSleeping = true;
@@ -895,6 +945,25 @@ static void executePhysicsStep(int ticks, bool silent) {
         }
 
         g_arena->Step(1);
+
+        // Post-goal 30-frame ball flight then freeze inside goal
+        if (g_goalIncidentLatched && g_arena->ball) {
+            if (g_arena->tickCount > g_goalScoredAtTick + POST_GOAL_BALL_FLIGHT_TICKS) {
+                if (!g_ballFrozenPostGoal) {
+                    g_frozenBallState = g_arena->ball->GetState();
+                    g_frozenBallState.vel = Vec(0.0f, 0.0f, 0.0f);
+                    g_frozenBallState.angVel = Vec(0.0f, 0.0f, 0.0f);
+                    g_ballFrozenPostGoal = true;
+                }
+                g_arena->ball->SetState(g_frozenBallState);
+                g_arena->ball->_rigidBody.setLinearVelocity(btVector3(0.0f, 0.0f, 0.0f));
+                g_arena->ball->_rigidBody.setAngularVelocity(btVector3(0.0f, 0.0f, 0.0f));
+                g_arena->ball->_rigidBody.clearForces();
+                g_arena->ball->_rigidBody.setActivationState(ISLAND_SLEEPING);
+                g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+            }
+        }
+
         UpdatePossessionTick(g_arena->tickTime);
 
         // State detection and incident triggers
@@ -1145,7 +1214,7 @@ int physics_getStateSnapshotSize() {
 void physics_resetKickoff(int seed) {
     if (!g_arena) return;
     g_arena->ResetToRandomKickoff(seed);
-    g_goalScoredFlag = 0;
+    resetPostGoalLatchState();
     g_lastBallWorldHitTick = 0;
     g_firstTouchFired = false;
     g_lastBallSleeping = true;
@@ -1158,6 +1227,10 @@ void physics_resetKickoff(int seed) {
         g_carTrackers[i] = CarActionTracker();
     }
     syncStateBuffer();
+}
+
+void physics_resetGoalLatch() {
+    resetPostGoalLatchState();
 }
 
 // Dynamic Impact Threshold Adjustment
@@ -1241,11 +1314,18 @@ void physics_getPossessionStats(int* outTeam, int* outBluePoints, int* outOrange
     if (outTime) *outTime = g_possession.activePossessionTime;
 }
 
-// Signal Event Injection
+// Signal Event Injection (Idempotent goal latch reset on Goal Replay Start / Kickoff Will Start)
 void physics_pushSignalEvent(uint32_t type, uint32_t tick, float posX, float posY, float posZ,
                              float normX, float normY, float normZ, uint16_t primaryId,
                              uint16_t secondaryId, uint32_t subType, uint32_t flags,
                              float customFloat, uint32_t customInt) {
+    if (type == SIGNAL_GOAL_REPLAY_START ||
+        type == SIGNAL_KICKOFF_WILL_START ||
+        type == SIGNAL_KICKOFF_START ||
+        type == SIGNAL_BALL_RESET ||
+        type == SIGNAL_MATCH_START) {
+        resetPostGoalLatchState();
+    }
     PhysicsEvent ev = {};
     ev.type = type;
     ev.tick = tick;
@@ -1470,6 +1550,9 @@ void physics_setBallState(int carIndexOrNull, float* statePtr) {
 
     g_arena->ball->SetState(bs);
     g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+    if (!g_arena->IsBallScored()) {
+        resetPostGoalLatchState();
+    }
     syncStateBuffer();
 }
 
@@ -1529,6 +1612,9 @@ int physics_controlBall(int carIndex, int modeIndex) {
 
     g_arena->ball->SetState(bs);
     g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+    if (!g_arena->IsBallScored()) {
+        resetPostGoalLatchState();
+    }
     syncStateBuffer();
     return 1;
 }

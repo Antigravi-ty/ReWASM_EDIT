@@ -52,7 +52,7 @@ objs = [os.path.join(OBJ_DIR, f) for f in os.listdir(OBJ_DIR) if f.endswith(".o"
 
 exported_functions = (
     "['_malloc','_free','_physics_init','_physics_createArena','_physics_step',"
-    "'_physics_resetKickoff','_physics_clearGoalFlag','_physics_getStatePtr',"
+    "'_physics_resetKickoff','_physics_resetGoalLatch','_physics_clearGoalFlag','_physics_getStatePtr',"
     "'_physics_getStateSize','_physics_getControlsPtr','_physics_getPadInfoPtr',"
     "'_physics_addCar','_physics_removeCar','_physics_setCarHitbox','_physics_demolishCar','_physics_respawnCar','_physics_getCarCount','_physics_getCarConfig','_physics_setCarState',"
     "'_physics_setBallState','_physics_setUnlimitedBoost','_physics_getBallOnGround',"
