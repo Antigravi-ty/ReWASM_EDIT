@@ -72,6 +72,14 @@ struct MutatorConfig {
 	// Only used if the game mode has soccar goals (i.e. soccar, heatseeker, snowday)
 	float goalBaseThresholdY = RLConst::SOCCAR_GOAL_SCORE_BASE_THRESHOLD_Y;
 
+	// 3D GoalVolume_TA box check for non-standard arenas like Throwback Stadium where play continues behind the goal
+	bool useThrowbackGoalVolume = false;
+	float goalVolumeHalfWidthX = RLConst::ThrowbackStadium::GOAL_VOLUME_HALF_WIDTH_X;
+	float goalVolumeMinY = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Y;
+	float goalVolumeMaxY = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Y;
+	float goalVolumeMinZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Z;
+	float goalVolumeMaxZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Z;
+
 	MutatorConfig(GameMode gameMode);
 
 	void Serialize(DataStreamOut& out) const;

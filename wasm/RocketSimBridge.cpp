@@ -80,21 +80,28 @@ struct BoostPadStatePod {
     float cooldown;
 }; // 2 floats
 
+struct CarJumpAirStatePod {
+    float isJumping;
+    float airTime;
+    float jumpTime;
+    float airTimeSinceJump;
+}; // 4 floats
+
 struct GameStateBufferPod {
-    ArenaHeaderPod header;              // 4 floats (0..3)
-    BallStatePod ball;                  // 18 floats (4..21)
-    CarStatePod cars[MAX_ARENA_CARS];   // 320 floats (22..341)
-    BoostPadStatePod pads[NUM_ARENA_PADS]; // 68 floats (342..409)
-    float isBallSleeping;               // float (410)
-    float isSimulationFrozen;           // float (411)
-    float possessionState;              // float (412: 0: Neutral, 1: Blue, 2: Orange)
-    float possessionBluePoints;         // float (413)
-    float possessionOrangePoints;       // float (414)
-    float possessionDuration;           // float (415)
-    float reserved[8];                  // 8 floats (416..423)
+    ArenaHeaderPod header;                          // 4 floats (0..3)
+    BallStatePod ball;                              // 18 floats (4..21)
+    CarStatePod cars[MAX_ARENA_CARS];               // 320 floats (22..341)
+    BoostPadStatePod pads[NUM_ARENA_PADS];          // 68 floats (342..409)
+    float isBallSleeping;                           // float (410)
+    float isSimulationFrozen;                       // float (411)
+    float possessionState;                          // float (412: 0: Neutral, 1: Blue, 2: Orange)
+    float possessionBluePoints;                     // float (413)
+    float possessionOrangePoints;                   // float (414)
+    float possessionDuration;                       // float (415)
+    CarJumpAirStatePod carJumpAir[MAX_ARENA_CARS];  // 32 floats (416..447: 4 floats per car for all 8 cars)
 };
 #pragma pack(pop)
-static_assert(sizeof(GameStateBufferPod) == 424 * sizeof(float), "GameStateBufferPod must be exactly 424 floats");
+static_assert(sizeof(GameStateBufferPod) == 448 * sizeof(float), "GameStateBufferPod must be exactly 448 floats");
 
 // Unified Physics Incident Event Types (0x01..0x1F)
 static constexpr uint32_t INCIDENT_NONE = 0x00;
@@ -229,8 +236,11 @@ static void PushPhysicsEvent(const PhysicsEvent& ev) {
 static void syncStateBuffer();
 static Arena* g_arena = nullptr;
 static std::vector<Car*> g_cars;
+static CarConfig g_carBaseConfigs[MAX_ARENA_CARS];
 static int g_goalScoredFlag = 0;
 static bool g_unlimitedBoost = false;
+// Arena Preset: 0 = Standard Soccar, 1 = Throwback Stadium (SARPBC)
+static int g_arenaPreset = 0;
 static bool g_firstTouchFired = false;
 static bool g_lastBallSleeping = true;
 
@@ -418,7 +428,14 @@ struct ArenaSnapshotPod {
 static_assert(sizeof(ArenaSnapshotPod) % sizeof(float) == 0, "ArenaSnapshotPod must be 4-byte aligned float multiple");
 
 static constexpr int MAX_SNAPSHOT_SLOTS = 256;
-static ArenaSnapshotPod g_snapshotSlots[MAX_SNAPSHOT_SLOTS];
+static ArenaSnapshotPod* g_snapshotSlots = nullptr;
+
+static ArenaSnapshotPod* ensureSnapshotSlots() {
+    if (!g_snapshotSlots) {
+        g_snapshotSlots = static_cast<ArenaSnapshotPod*>(std::calloc(MAX_SNAPSHOT_SLOTS, sizeof(ArenaSnapshotPod)));
+    }
+    return g_snapshotSlots;
+}
 
 static void serializeToSnapshot(ArenaSnapshotPod& snap) {
     if (!g_arena) {
@@ -875,21 +892,15 @@ static void syncStateBuffer() {
     g_state.possessionOrangePoints = static_cast<float>(g_possession.orangePoints);
     g_state.possessionDuration = g_possession.activePossessionTime;
 
-    // Populate reserved[0..7] (floats 416..423) with PPO obs_v3 fields for Car 0 and Car 1
-    std::memset(g_state.reserved, 0, sizeof(g_state.reserved));
-    if (g_cars.size() > 0 && g_cars[0]) {
-        const CarState& cs0 = g_cars[0]->_internalState;
-        g_state.reserved[0] = cs0.isJumping ? 1.0f : 0.0f;
-        g_state.reserved[1] = cs0.airTime;
-        g_state.reserved[4] = cs0.jumpTime;
-        g_state.reserved[5] = cs0.airTimeSinceJump;
-    }
-    if (g_cars.size() > 1 && g_cars[1]) {
-        const CarState& cs1 = g_cars[1]->_internalState;
-        g_state.reserved[2] = cs1.isJumping ? 1.0f : 0.0f;
-        g_state.reserved[3] = cs1.airTime;
-        g_state.reserved[6] = cs1.jumpTime;
-        g_state.reserved[7] = cs1.airTimeSinceJump;
+    // Populate carJumpAir[0..7] (floats 416..447) with PPO obs_v3 & jump/air timers for all 8 cars
+    std::memset(g_state.carJumpAir, 0, sizeof(g_state.carJumpAir));
+    for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+        if (!g_cars[i]) continue;
+        const CarState& cs = g_cars[i]->_internalState;
+        g_state.carJumpAir[i].isJumping = cs.isJumping ? 1.0f : 0.0f;
+        g_state.carJumpAir[i].airTime = cs.airTime;
+        g_state.carJumpAir[i].jumpTime = cs.jumpTime;
+        g_state.carJumpAir[i].airTimeSinceJump = cs.airTimeSinceJump;
     }
 }
 
@@ -917,7 +928,16 @@ int physics_init(uint8_t* meshData, int32_t* meshSizes, int chunkCount) {
         }
     }
 
-    if (RocketSim::GetStage() == RocketSimStage::UNINITIALIZED) {
+    if (!meshFilesMap[GameMode::SOCCAR].empty() || RocketSim::GetStage() == RocketSimStage::UNINITIALIZED) {
+        if (g_ballPredTracker) {
+            delete g_ballPredTracker;
+            g_ballPredTracker = nullptr;
+        }
+        if (g_arena) {
+            delete g_arena;
+            g_arena = nullptr;
+        }
+        g_cars.clear();
         RocketSim::InitFromMem(meshFilesMap, true);
     }
     return 1;
@@ -951,14 +971,46 @@ int physics_createArena() {
         g_carTrackers[i] = CarActionTracker();
         g_carOverrides[i] = CarPhysicsOverride();
         g_carCollisionMasks[i] = CarCollisionMask();
+        g_carBaseConfigs[i] = CAR_CONFIG_OCTANE;
     }
 
     // Initialize arena with full physical rotation enabled
     // Real-time gameplay requires ball angular velocity & spin simulation (noBallRot = false)
     ArenaConfig arenaConfig;
     arenaConfig.noBallRot = false;
+    if (g_arenaPreset == 1) {
+        // Throwback Stadium (SARPBC): field extends behind goals up to Y=+-6912
+        arenaConfig.minPos = Vec(-5600.f, -7200.f, -100.f);
+        arenaConfig.maxPos = Vec( 5600.f,  7200.f,  2200.f);
+        arenaConfig.disableHardcodedSideWalls = true;
+        arenaConfig.useThrowbackSpawns = true;
+        arenaConfig.useCustomBoostPads = true;
+        // Populate 34 boost pads (8 big pills including 2 behind goals + 26 key small pads)
+        for (int i = 0; i < RLConst::ThrowbackStadium::LOCS_AMOUNT_BIG; i++) {
+            BoostPadConfig bpc;
+            bpc.pos = RLConst::ThrowbackStadium::LOCS_BIG[i];
+            bpc.isBig = true;
+            arenaConfig.customBoostPads.push_back(bpc);
+        }
+        for (int i = 0; i < RLConst::ThrowbackStadium::LOCS_AMOUNT_SMALL && (int)arenaConfig.customBoostPads.size() < NUM_ARENA_PADS; i++) {
+            BoostPadConfig bpc;
+            bpc.pos = RLConst::ThrowbackStadium::LOCS_SMALL[i];
+            bpc.isBig = false;
+            arenaConfig.customBoostPads.push_back(bpc);
+        }
+    }
     g_arena = Arena::Create(GameMode::SOCCAR, arenaConfig);
     if (!g_arena) return 0;
+    if (g_arenaPreset == 1) {
+        MutatorConfig mc = g_arena->GetMutatorConfig();
+        mc.useThrowbackGoalVolume = true;
+        mc.goalVolumeHalfWidthX = RLConst::ThrowbackStadium::GOAL_VOLUME_HALF_WIDTH_X;
+        mc.goalVolumeMinY = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Y;
+        mc.goalVolumeMaxY = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Y;
+        mc.goalVolumeMinZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Z;
+        mc.goalVolumeMaxZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Z;
+        g_arena->SetMutatorConfig(mc);
+    }
 
     if (g_arena->_bulletWorldParams.overlappingPairCache) {
         g_arena->_bulletWorldParams.overlappingPairCache->setOverlapFilterCallback(&g_bridgeOverlapFilter);
@@ -1301,18 +1353,142 @@ int physics_restoreState(const float* inBuffer) {
 
 int physics_saveStateSlot(int slot) {
     if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
-    serializeToSnapshot(g_snapshotSlots[slot]);
+    ArenaSnapshotPod* slots = ensureSnapshotSlots();
+    if (!slots) return 0;
+    serializeToSnapshot(slots[slot]);
     return 1;
 }
 
 int physics_restoreStateSlot(int slot) {
     if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
+    if (!g_snapshotSlots) return 0;
     deserializeFromSnapshot(g_snapshotSlots[slot]);
     return 1;
 }
 
 int physics_getStateSnapshotSize() {
     return static_cast<int>(sizeof(ArenaSnapshotPod) / sizeof(float));
+}
+
+int physics_restoreCompactState(const float* inBuffer, int floatCount) {
+    if (!g_arena || !inBuffer || floatCount < 410) return 0;
+
+    g_arena->tickCount = static_cast<uint64_t>(std::max(0.0f, std::round(inBuffer[0])));
+    g_goalScoredFlag = static_cast<int>(std::round(inBuffer[1]));
+
+    // 1. Restore Ball (floats 4..21)
+    if (g_arena->ball) {
+        BallState bs = g_arena->ball->GetState();
+        bs.pos = Vec(inBuffer[4], inBuffer[5], inBuffer[6]);
+        bs.rotMat.forward = Vec(inBuffer[7], inBuffer[8], inBuffer[9]);
+        bs.rotMat.right = Vec(inBuffer[10], inBuffer[11], inBuffer[12]);
+        bs.rotMat.up = Vec(inBuffer[13], inBuffer[14], inBuffer[15]);
+        bs.vel = Vec(inBuffer[16], inBuffer[17], inBuffer[18]);
+        bs.angVel = Vec(inBuffer[19], inBuffer[20], inBuffer[21]);
+        g_arena->ball->SetState(bs);
+        g_arena->ball->_rigidBody.clearForces();
+        if (bs.vel.LengthSq() == 0.0f && bs.angVel.LengthSq() == 0.0f) {
+            g_arena->ball->_rigidBody.setActivationState(ISLAND_SLEEPING);
+        } else {
+            g_arena->ball->_rigidBody.setActivationState(ACTIVE_TAG);
+        }
+        g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
+        if (!g_arena->IsBallScored()) {
+            resetPostGoalLatchState();
+        }
+    }
+
+    // 2. Restore Cars (floats 22..341 + carJumpAir at 416..447)
+    size_t numCars = std::min(g_cars.size(), static_cast<size_t>(MAX_ARENA_CARS));
+    for (size_t c = 0; c < numCars; c++) {
+        Car* car = g_cars[c];
+        if (!car) continue;
+        const float* cp = &inBuffer[22 + c * CAR_STRIDE];
+
+        CarState cs = car->GetState();
+        cs.pos = Vec(cp[0], cp[1], cp[2]);
+        cs.rotMat.forward = Vec(cp[3], cp[4], cp[5]);
+        cs.rotMat.right = Vec(cp[6], cp[7], cp[8]);
+        cs.rotMat.up = Vec(cp[9], cp[10], cp[11]);
+        cs.vel = Vec(cp[12], cp[13], cp[14]);
+        cs.angVel = Vec(cp[15], cp[16], cp[17]);
+        cs.boost = cp[18];
+        cs.isOnGround = cp[19] >= 0.5f;
+        cs.isSupersonic = cp[20] >= 0.5f;
+        cs.isDemoed = cp[21] >= 0.5f;
+        bool hasFlipOrJump = cp[22] >= 0.5f;
+        cs.isBoosting = cp[23] >= 0.5f;
+        cs.isFlipping = cp[24] >= 0.5f;
+
+        // Extended jump/air timers for all 8 cars at 416 + c * 4
+        int jumpBase = 416 + static_cast<int>(c) * 4;
+        if (floatCount >= jumpBase + 4) {
+            cs.isJumping = inBuffer[jumpBase + 0] >= 0.5f;
+            cs.airTime = inBuffer[jumpBase + 1];
+            cs.jumpTime = inBuffer[jumpBase + 2];
+            cs.airTimeSinceJump = inBuffer[jumpBase + 3];
+            if (cs.isJumping) {
+                cs.hasJumped = true;
+                car->controls.jump = true;
+                cs.lastControls.jump = true;
+            } else if (cs.airTimeSinceJump > 0.0f) {
+                cs.hasJumped = true;
+            } else if (cs.isOnGround && !cs.isFlipping) {
+                cs.hasJumped = false;
+                cs.hasDoubleJumped = false;
+                cs.hasFlipped = false;
+            }
+            if (!cs.isOnGround && !hasFlipOrJump && !cs.isFlipping) {
+                cs.hasDoubleJumped = true;
+            }
+        }
+
+        for (int w = 0; w < 4 && w < car->_bulletVehicle.getNumWheels(); w++) {
+            bool wContact = cp[25 + w * 3 + 2] >= 0.5f;
+            cs.wheelsWithContact[w] = wContact;
+        }
+
+        car->SetState(cs);
+        car->_rigidBody.clearForces();
+
+        // Restore wheel suspension length, steer angle, contact state & world transform
+        for (int w = 0; w < 4 && w < car->_bulletVehicle.getNumWheels(); w++) {
+            btWheelInfoRL& wi = car->_bulletVehicle.m_wheelInfo[w];
+            float susLenUU = cp[25 + w * 3 + 0];
+            float steerAngle = cp[25 + w * 3 + 1];
+            bool wContact = cp[25 + w * 3 + 2] >= 0.5f;
+            if (susLenUU > 0.0f) {
+                wi.m_raycastInfo.m_suspensionLength = susLenUU * UU_TO_BT;
+            }
+            wi.m_steerAngle = steerAngle;
+            wi.m_raycastInfo.m_isInContact = wContact;
+            car->_bulletVehicle.updateWheelTransform(w);
+        }
+
+        if (g_carOverrides[c].active) {
+            g_carOverrides[c].lockedOriginBT = car->_rigidBody.getWorldTransform().getOrigin();
+        }
+        g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
+    }
+
+    // 3. Restore Boost Pads (floats 342..409)
+    const auto& pads = g_arena->GetBoostPads();
+    size_t padCount = std::min(pads.size(), static_cast<size_t>(NUM_ARENA_PADS));
+    for (size_t p = 0; p < padCount; p++) {
+        int padIdx = 342 + static_cast<int>(p) * 2;
+        if (padIdx + 1 < floatCount) {
+            bool active = inBuffer[padIdx] >= 0.5f;
+            float cooldown = inBuffer[padIdx + 1];
+            pads[p]->_internalState.isActive = active;
+            pads[p]->_internalState.cooldown = cooldown;
+            if (active) {
+                pads[p]->_internalState.prevLockedCarID = 0;
+            }
+        }
+    }
+
+    syncStateBuffer();
+    return 1;
 }
 
 // Export 't'
@@ -1818,7 +1994,7 @@ int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
         bool isBlue = (specs[i].team == Team::BLUE);
         int teamSlot = isBlue ? (blueIdx++) : (orangeIdx++);
         int locIdx = (safeSpawnIdx + teamSlot) % CAR_SPAWN_LOCATION_AMOUNT;
-        CarSpawnPos spawnPos = CAR_SPAWN_LOCATIONS_SOCCAR[locIdx];
+        CarSpawnPos spawnPos = (g_arenaPreset == 1) ? RLConst::ThrowbackStadium::CAR_SPAWN_LOCATIONS[locIdx] : CAR_SPAWN_LOCATIONS_SOCCAR[locIdx];
 
         CarState spawnState;
         spawnState.boost = g_arena->_mutatorConfig.carSpawnBoostAmount;
@@ -1997,6 +2173,78 @@ float* physics_getReplayFramePtrByIndex(int frameIndex) {
     size_t byteOffset = sizeof(ReplayHeader) + static_cast<size_t>(targetIdx) * sizeof(GameStateBufferPod);
     if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_STORAGE_BYTES) return nullptr;
     return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
+}
+
+// ============================================================================
+// Three-Wheeler ("三蹦子" / Confidential_ThirdWheel_Test) & Throwback Stadium APIs
+// ============================================================================
+
+int physics_setCarThreeWheels(int carIndex, int enabled) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
+    Car* oldCar = g_cars[carIndex];
+    if (!oldCar) return 0;
+
+    CarState state = oldCar->GetState();
+    Team team = oldCar->team;
+    if (!oldCar->config.threeWheels && carIndex < MAX_ARENA_CARS) {
+        g_carBaseConfigs[carIndex] = oldCar->config;
+    }
+
+    CarConfig cfg = (enabled != 0)
+        ? CAR_CONFIG_PSYCLOPS
+        : ((carIndex < MAX_ARENA_CARS) ? g_carBaseConfigs[carIndex] : CAR_CONFIG_OCTANE);
+
+    g_arena->RemoveCar(oldCar);
+    Car* newCar = g_arena->AddCar(team, cfg);
+    if (!newCar) return 0;
+
+    newCar->SetState(state);
+    if (g_carOverrides[carIndex].active) {
+        newCar->_rigidBody.setLinearFactor(g_carOverrides[carIndex].linearFactor);
+        newCar->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * g_carOverrides[carIndex].gravityScale);
+    }
+    g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
+    g_cars[carIndex] = newCar;
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_getCarThreeWheels(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size()) || !g_cars[carIndex]) return 0;
+    return g_cars[carIndex]->config.threeWheels ? 1 : 0;
+}
+
+void physics_setArenaPreset(int presetIndex) {
+    g_arenaPreset = presetIndex;
+    if (g_arena) {
+        MutatorConfig mc = g_arena->GetMutatorConfig();
+        if (presetIndex == 1) {
+            mc.useThrowbackGoalVolume = true;
+            mc.goalVolumeHalfWidthX = RLConst::ThrowbackStadium::GOAL_VOLUME_HALF_WIDTH_X;
+            mc.goalVolumeMinY = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Y;
+            mc.goalVolumeMaxY = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Y;
+            mc.goalVolumeMinZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Z;
+            mc.goalVolumeMaxZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Z;
+        } else {
+            mc.useThrowbackGoalVolume = false;
+        }
+        g_arena->SetMutatorConfig(mc);
+    }
+}
+
+int physics_getArenaPreset() {
+    return g_arenaPreset;
+}
+
+void physics_setGoalVolumeBox(int enabled, float halfWidthX, float minY, float maxY, float maxZ) {
+    if (!g_arena) return;
+    MutatorConfig mc = g_arena->GetMutatorConfig();
+    mc.useThrowbackGoalVolume = (enabled != 0);
+    if (halfWidthX > 0.0f) mc.goalVolumeHalfWidthX = halfWidthX;
+    if (minY > 0.0f) mc.goalVolumeMinY = minY;
+    if (maxY > 0.0f) mc.goalVolumeMaxY = maxY;
+    if (maxZ > 0.0f) mc.goalVolumeMaxZ = maxZ;
+    g_arena->SetMutatorConfig(mc);
 }
 
 } // extern "C" 

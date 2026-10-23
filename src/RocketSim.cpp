@@ -104,22 +104,18 @@ void RocketSim::InitFromMem(const std::map<GameMode, std::vector<FileData>>& mes
 
 	_beginInitMutex.lock();
 	{
-		if (stage != RocketSimStage::UNINITIALIZED) {
+		bool isReload = (stage != RocketSimStage::UNINITIALIZED);
+		if (!isReload) {
 			if (!silent)
-				RS_WARN("RocketSim::Init() called again after already initialized, ignoring...");
-			_beginInitMutex.unlock();
-			return;
+				RS_LOG("Initializing RocketSim version " RS_VERSION ", created by ZealanL...");
+
+			stage = RocketSimStage::INITIALIZING;
+
+			// Init dropshot stuff
+			DropshotTiles::Init();
 		}
 
-		if (!silent)
-			RS_LOG("Initializing RocketSim version " RS_VERSION ", created by ZealanL...");
-
-		stage = RocketSimStage::INITIALIZING;
-
 		uint64_t startMS = RS_CUR_MS();
-
-		// Init dropshot stuff
-		DropshotTiles::Init();
 
 		for (auto& mapPair : meshFilesMap) { // Load collision meshes for soccar and hoops
 			GameMode gameMode = mapPair.first;
@@ -135,6 +131,19 @@ void RocketSim::InitFromMem(const std::map<GameMode, std::vector<FileData>>& mes
 			}
 
 			auto& meshes = GetArenaCollisionShapes(gameMode);
+			if (!meshes.empty()) {
+				for (auto* oldBvt : meshes) {
+					if (!oldBvt) continue;
+					if (oldBvt->getTriangleInfoMap()) {
+						delete oldBvt->getTriangleInfoMap();
+						oldBvt->setTriangleInfoMap(nullptr);
+					}
+					auto* meshInterface = oldBvt->getMeshInterface();
+					delete oldBvt;
+					delete meshInterface;
+				}
+				meshes.clear();
+			}
 
 			MeshHashSet targetHashes = MeshHashSet(gameMode);
 

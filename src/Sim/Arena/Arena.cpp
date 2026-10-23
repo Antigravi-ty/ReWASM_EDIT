@@ -139,8 +139,9 @@ void Arena::ResetToRandomKickoff(int seed) {
 
 	std::shuffle(kickoffOrder.begin(), kickoffOrder.begin() + locationAmount, *randEngine);
 
-	const CarSpawnPos* CAR_SPAWN_LOCATIONS = CAR_SPAWN_LOCATIONS_SOCCAR;
-	const CarSpawnPos* CAR_RESPAWN_LOCATIONS = CAR_RESPAWN_LOCATIONS_SOCCAR;
+	bool isThrowback = _config.useThrowbackSpawns || _mutatorConfig.useThrowbackGoalVolume;
+	const CarSpawnPos* CAR_SPAWN_LOCATIONS = isThrowback ? ThrowbackStadium::CAR_SPAWN_LOCATIONS : CAR_SPAWN_LOCATIONS_SOCCAR;
+	const CarSpawnPos* CAR_RESPAWN_LOCATIONS = isThrowback ? ThrowbackStadium::CAR_RESPAWN_LOCATIONS : CAR_RESPAWN_LOCATIONS_SOCCAR;
 	if (gameMode == GameMode::HOOPS) {
 		CAR_SPAWN_LOCATIONS = CAR_SPAWN_LOCATIONS_HOOPS;
 		CAR_RESPAWN_LOCATIONS = CAR_RESPAWN_LOCATIONS_HOOPS;
@@ -935,8 +936,17 @@ bool Arena::IsBallScored() const {
 	case GameMode::HEATSEEKER:
 	case GameMode::SNOWDAY:
 	{
-		float ballPosY = ball->_rigidBody.getWorldTransform().m_origin.y() * BT_TO_UU;
-		return abs(ballPosY) > (_mutatorConfig.goalBaseThresholdY + _mutatorConfig.ballRadius);
+		Vec ballPos = ball->_rigidBody.getWorldTransform().m_origin * BT_TO_UU;
+		if (_mutatorConfig.useThrowbackGoalVolume) {
+			float absX = abs(ballPos.x);
+			float absY = abs(ballPos.y);
+			return (absX < (_mutatorConfig.goalVolumeHalfWidthX - _mutatorConfig.ballRadius * 0.25f)) &&
+			       (ballPos.z > _mutatorConfig.goalVolumeMinZ) &&
+			       (ballPos.z < (_mutatorConfig.goalVolumeMaxZ - _mutatorConfig.ballRadius * 0.25f)) &&
+			       (absY > (_mutatorConfig.goalVolumeMinY + _mutatorConfig.ballRadius)) &&
+			       (absY < _mutatorConfig.goalVolumeMaxY);
+		}
+		return abs(ballPos.y) > (_mutatorConfig.goalBaseThresholdY + _mutatorConfig.ballRadius);
 	}
 	case GameMode::HOOPS:
 	{
@@ -1092,7 +1102,7 @@ void Arena::_SetupArenaCollisionShapes() {
 		// Ceiling
 		fnAddPlane(Vec(0, 0, height), Vec(0, 0, -1), 0);
 
-		if (!isDropShot) {
+		if (!isDropShot && !_config.disableHardcodedSideWalls) {
 			// Side walls
 			fnAddPlane(Vec(-extentX, 0, height / 2), btVector3( 1, 0, 0));
 			fnAddPlane(Vec(extentX, 0, height / 2),  btVector3(-1, 0, 0));

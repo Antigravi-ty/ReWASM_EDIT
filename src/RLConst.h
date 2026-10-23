@@ -525,6 +525,95 @@ namespace RLConst {
 			{2200.f, 417.f},
 		}
 	};
+
+	// Throwback Stadium (SARPBC) exact constants extracted from ThrowbackStadium_P.upk
+	namespace ThrowbackStadium {
+		constexpr float
+			ARENA_EXTENT_X = 4096.f,
+			ARENA_EXTENT_Y = 6912.f,
+			ARENA_HEIGHT = 2048.f,
+
+			// GoalVolume_TA_0 (Orange) & GoalVolume_TA_1 (Blue) 3D AABB in Unreal Units
+			GOAL_VOLUME_HALF_WIDTH_X = 960.0f,
+			GOAL_VOLUME_MIN_Y = 4909.31f,
+			GOAL_VOLUME_MAX_Y = 5757.31f,
+			GOAL_VOLUME_MIN_Z = -64.0f,
+			GOAL_VOLUME_MAX_Z = 648.0f;
+
+		constexpr int
+			LOCS_AMOUNT_BIG = 8,
+			LOCS_AMOUNT_SMALL = 36,
+			LOCS_AMOUNT_SMALL_COMPAT34 = 26;
+
+		// 8 Boost Pills (100 boost) from ThrowbackStadium_P.upk
+		constexpr Vec LOCS_BIG[LOCS_AMOUNT_BIG] = {
+			{ -3072.f, -4096.f, 72.f },
+			{  3072.f, -4096.f, 72.f },
+			{ -3584.f,     0.f, 72.f },
+			{  3584.f,     0.f, 72.f },
+			{ -3072.f,  4096.f, 72.f },
+			{  3072.f,  4096.f, 72.f },
+			{     0.f, -6512.f, 72.f }, // Behind Blue Goal
+			{     0.f,  6512.f, 72.f }  // Behind Orange Goal
+		};
+
+		// 36 Small Boost Pads (12 boost) from ThrowbackStadium_P.upk
+		constexpr Vec LOCS_SMALL[LOCS_AMOUNT_SMALL] = {
+			{ -3072.f, -6016.f, 70.f },
+			{ -1792.f, -6104.f, 70.f },
+			{  1792.f, -6104.f, 70.f },
+			{  3072.f, -6016.f, 70.f },
+			{     0.f, -4240.f, 70.f },
+			{ -1792.f, -4184.f, 70.f },
+			{  1792.f, -4184.f, 70.f },
+			{  -940.f, -3308.f, 70.f },
+			{   940.f, -3308.f, 70.f },
+			{     0.f, -2816.f, 70.f },
+			{ -3584.f, -2484.f, 70.f },
+			{  3584.f, -2484.f, 70.f },
+			{ -1788.f, -2300.f, 70.f },
+			{  1788.f, -2300.f, 70.f },
+			{ -2048.f, -1036.f, 70.f },
+			{     0.f, -1024.f, 70.f },
+			{  2048.f, -1036.f, 70.f },
+			{ -1024.f,     0.f, 70.f },
+			{  1024.f,     0.f, 70.f },
+			{ -2048.f,  1036.f, 70.f },
+			{     0.f,  1024.f, 70.f },
+			{  2048.f,  1036.f, 70.f },
+			{ -1788.f,  2300.f, 70.f },
+			{  1788.f,  2300.f, 70.f },
+			{ -3584.f,  2484.f, 70.f },
+			{  3584.f,  2484.f, 70.f },
+			{     0.f,  2816.f, 70.f },
+			{  -940.f,  3308.f, 70.f },
+			{   940.f,  3308.f, 70.f },
+			{ -1792.f,  4184.f, 70.f },
+			{  1792.f,  4184.f, 70.f },
+			{     0.f,  4240.f, 70.f },
+			{ -3072.f,  6016.f, 70.f },
+			{ -1792.f,  6104.f, 70.f },
+			{  1792.f,  6104.f, 70.f },
+			{  3072.f,  6016.f, 70.f }
+		};
+
+		// PlayerStart_TA kickoff spawn locations from ThrowbackStadium_P.upk (5 primary + 4 backline)
+		const static CarSpawnPos CAR_SPAWN_LOCATIONS[CAR_SPAWN_LOCATION_AMOUNT] = {
+			{ -2048.f, -2560.f, M_PI_4 * 1 },
+			{  2048.f, -2560.f, M_PI_4 * 3 },
+			{  -256.f, -3840.f, M_PI_4 * 2 },
+			{   256.f, -3840.f, M_PI_4 * 2 },
+			{     0.f, -4608.f, M_PI_4 * 2 }
+		};
+
+		const static CarSpawnPos CAR_RESPAWN_LOCATIONS[CAR_RESPAWN_LOCATION_AMOUNT] = {
+			{ -2688.f, -4608.f, M_PI_4 * 2 },
+			{ -2304.f, -4608.f, M_PI_4 * 2 },
+			{  2304.f, -4608.f, M_PI_4 * 2 },
+			{  2688.f, -4608.f, M_PI_4 * 2 }
+		};
+	}
+
 }
 
 RS_NS_END
