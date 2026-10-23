@@ -1,0 +1,220 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+     viewBox="0 0 4096 6000"
+     width="4096px" height="6000px">
+  <title>RocketSim Soccar Quadrant (Q1: X in [0, 4096], Y in [0, 6000]) 1:1 UU Blueprint</title>
+  <desc>
+    Quarter-Arena (Q1: +X, +Y) 1:1 Unreal Units Blueprint for Mirrored Ground Texture Authoring.
+    - Quadrant Pitch Extent: [0, 4096] x [0, 5120] (Aspect Ratio = 4:5 = 0.8)
+    - Quadrant Full Extent w/ Goal: [0, 4096] x [0, 6000]
+    - Origin (0,0) is Top-Left of this SVG (Center of Arena).
+  </desc>
+  <defs>
+    <style type="text/css"><![CDATA[
+      .bg-fill { fill: #0d1117; }
+      .grid-1024 { stroke: #1f2937; stroke-width: 4; stroke-dasharray: 16,16; fill: none; }
+      .grid-512 { stroke: #161e29; stroke-width: 2; stroke-dasharray: 8,16; fill: none; }
+      .arena-rect { stroke: #3b82f6; stroke-width: 10; fill: none; }
+      .goal-rect { stroke: #f59e0b; stroke-width: 8; fill: rgba(245, 158, 11, 0.06); }
+      .cmf-wall { stroke: #60a5fa; stroke-width: 6; fill: none; }
+      .cmf-floor { stroke: #10b981; stroke-width: 5; stroke-dasharray: 16,8; fill: rgba(16, 185, 129, 0.04); }
+      .uv-rect { stroke: #a855f7; stroke-width: 5; stroke-dasharray: 24,12; fill: none; }
+      .pad-big-cyl { stroke: #fbbf24; stroke-width: 5; fill: rgba(251, 191, 36, 0.18); }
+      .pad-big-box { stroke: #f59e0b; stroke-width: 3; stroke-dasharray: 10,6; fill: rgba(245, 158, 11, 0.08); }
+      .pad-small-cyl { stroke: #38bdf8; stroke-width: 4; fill: rgba(56, 189, 248, 0.16); }
+      .pad-small-box { stroke: #0284c7; stroke-width: 3; stroke-dasharray: 8,5; fill: rgba(2, 132, 199, 0.07); }
+      .pad-center { fill: #ffffff; }
+      .spawn-origin { fill: #ef4444; stroke: #ffffff; stroke-width: 3; }
+      .demo-origin { fill: #f97316; stroke: #ffffff; stroke-width: 3; }
+      .spawn-hb-center { fill: #22d3ee; stroke: #000000; stroke-width: 2; }
+      .spawn-dir { stroke: #ffffff; stroke-width: 4; fill: none; }
+      .label-xs { font-family: monospace; font-size: 22px; fill: #d1d5db; }
+    ]]></style>
+  </defs>
+
+  <g id="Q1_00_Background" inkscape:groupmode="layer" inkscape:label="00_Background">
+    <rect x="0" y="0" width="4096" height="6000" class="bg-fill" />
+  </g>
+
+  <g id="Q1_01_Grid" inkscape:groupmode="layer" inkscape:label="01_Grid_512_1024">
+
+    <line x1="0" y1="0" x2="0" y2="6000" class="grid-1024" />
+    <line x1="512" y1="0" x2="512" y2="6000" class="grid-512" />
+    <line x1="1024" y1="0" x2="1024" y2="6000" class="grid-1024" />
+    <line x1="1536" y1="0" x2="1536" y2="6000" class="grid-512" />
+    <line x1="2048" y1="0" x2="2048" y2="6000" class="grid-1024" />
+    <line x1="2560" y1="0" x2="2560" y2="6000" class="grid-512" />
+    <line x1="3072" y1="0" x2="3072" y2="6000" class="grid-1024" />
+    <line x1="3584" y1="0" x2="3584" y2="6000" class="grid-512" />
+    <line x1="4096" y1="0" x2="4096" y2="6000" class="grid-1024" />
+    <line x1="0" y1="0" x2="4096" y2="0" class="grid-1024" />
+    <line x1="0" y1="512" x2="4096" y2="512" class="grid-512" />
+    <line x1="0" y1="1024" x2="4096" y2="1024" class="grid-1024" />
+    <line x1="0" y1="1536" x2="4096" y2="1536" class="grid-512" />
+    <line x1="0" y1="2048" x2="4096" y2="2048" class="grid-1024" />
+    <line x1="0" y1="2560" x2="4096" y2="2560" class="grid-512" />
+    <line x1="0" y1="3072" x2="4096" y2="3072" class="grid-1024" />
+    <line x1="0" y1="3584" x2="4096" y2="3584" class="grid-512" />
+    <line x1="0" y1="4096" x2="4096" y2="4096" class="grid-1024" />
+    <line x1="0" y1="4608" x2="4096" y2="4608" class="grid-512" />
+    <line x1="0" y1="5120" x2="4096" y2="5120" class="grid-1024" />
+    <line x1="0" y1="5632" x2="4096" y2="5632" class="grid-512" />
+    <circle cx="0" cy="0" r="91.25" stroke="#ffffff" stroke-width="4" fill="rgba(255,255,255,0.08)" />
+    <circle cx="0" cy="0" r="1024" stroke="#374151" stroke-width="5" stroke-dasharray="20,20" fill="none" />
+  </g>
+
+  <g id="Q1_02_Arena_And_Goal" inkscape:groupmode="layer" inkscape:label="02_Arena_And_Goal">
+    <rect id="Q1_Arena_Rect_4096x5120" x="0" y="0" width="4096" height="5120" class="arena-rect" />
+    <rect id="Q1_Goal_Mesh_Rect_896x880" x="0" y="5120" width="896" height="880" class="goal-rect" />
+    <rect id="Q1_Goal_FlatFloor_Rect" x="0" y="5120" width="804.95" height="234.67" stroke="#10b981" stroke-width="4" stroke-dasharray="10,6" fill="none" />
+    <line x1="0" y1="5124.25" x2="892.755" y2="5124.25" stroke="#ef4444" stroke-width="6" stroke-dasharray="16,8" />
+    <line x1="0" y1="5215.5" x2="892.755" y2="5215.5" stroke="#f43f5e" stroke-width="5" />
+    <path id="Q1_CMF_Outer_Wall" d="M 0.00,0.00 L 4096.00,0.00 L 4096.00,3559.40 L 4094.69,3615.00 L 4092.15,3674.94 L 4080.52,3763.20 L 4060.99,3848.56 L 4033.43,3930.77 L 3997.72,4009.61 L 3953.74,4084.83 L 3901.36,4156.22 L 3840.47,4223.53 L 3200.00,4864.00 L 3132.67,4924.91 L 3061.23,4977.34 L 2985.93,5021.40 L 2907.00,5057.19 L 2824.70,5084.84 L 2739.27,5104.45 L 2650.96,5116.13 L 2566.54,5119.72 L 903.99,5120.00 L 896.00,5128.00 L 896.01,5895.94 L 894.05,5916.18 L 888.45,5935.04 L 879.59,5952.12 L 867.87,5967.00 L 853.65,5979.06 L 837.35,5987.96 L 819.33,5993.59 L 800.00,5995.55 L 0.00,5995.55 Z" class="cmf-wall" />
+    <path id="Q1_CMF_Flat_Floor_Z0" d="M 0.00,0.00 L 3840.00,0.00 L 3839.99,3390.71 L 3836.84,3652.95 L 3828.25,3718.00 L 3814.21,3779.30 L 3794.81,3837.13 L 3769.99,3891.92 L 3739.46,3944.14 L 3702.75,3994.16 L 3659.45,4042.51 L 3018.98,4682.98 L 2973.35,4729.67 L 2928.95,4775.95 L 2882.23,4820.93 L 2830.77,4863.24 L 2772.97,4900.93 L 2708.18,4931.54 L 2636.78,4952.23 L 2434.60,4965.33 L 1344.00,4964.95 L 1280.00,4969.69 L 1216.00,4981.54 L 1152.00,4996.95 L 1088.00,5012.36 L 1024.00,5024.21 L 960.00,5028.95 L 903.96,5028.83 L 884.02,5030.52 L 865.22,5036.38 L 848.31,5045.58 L 833.67,5057.67 L 821.58,5072.31 L 812.38,5089.22 L 806.52,5108.02 L 804.84,5127.96 L 804.95,5354.66 L 0.00,5354.67 Z" class="cmf-floor" />
+    <rect id="Q1_Driftwoods_Ground_UV_Bounds" x="0" y="0" width="3840" height="5755.61" class="uv-rect" />
+  </g>
+
+  <g id="Q1_03_Boost_Pads" inkscape:groupmode="layer" inkscape:label="03_Boost_Pads">
+    <g id="Q1_BoostPad_Big_1_X3584_Y0">
+      <circle cx="3584.0" cy="0.0" r="208.0" class="pad-big-cyl" />
+      <rect x="3424.0" y="-160.0" width="320.0" height="320.0" class="pad-big-box" />
+      <circle cx="3584.0" cy="0.0" r="8" class="pad-center" />
+      <text x="3584.0" y="-228.0" text-anchor="middle" class="label-xs">BIG (3584,0)</text>
+    </g>
+    <g id="Q1_BoostPad_Big_3_X3072_Y4096">
+      <circle cx="3072.0" cy="4096.0" r="208.0" class="pad-big-cyl" />
+      <rect x="2912.0" y="3936.0" width="320.0" height="320.0" class="pad-big-box" />
+      <circle cx="3072.0" cy="4096.0" r="8" class="pad-center" />
+      <text x="3072.0" y="3868.0" text-anchor="middle" class="label-xs">BIG (3072,4096)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_14_X1024_Y0">
+      <circle cx="1024.0" cy="0.0" r="144.0" class="pad-small-cyl" />
+      <rect x="904.0" y="-120.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="1024.0" cy="0.0" r="6" class="pad-center" />
+      <text x="1024.0" y="-160.0" text-anchor="middle" class="label-xs">S (1024,0)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_16_X0_Y1024">
+      <circle cx="0.0" cy="1024.0" r="144.0" class="pad-small-cyl" />
+      <rect x="-120.0" y="904.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="0.0" cy="1024.0" r="6" class="pad-center" />
+      <text x="0.0" y="864.0" text-anchor="middle" class="label-xs">S (0,1024)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_17_X2048_Y1036">
+      <circle cx="2048.0" cy="1036.0" r="144.0" class="pad-small-cyl" />
+      <rect x="1928.0" y="916.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="2048.0" cy="1036.0" r="6" class="pad-center" />
+      <text x="2048.0" y="876.0" text-anchor="middle" class="label-xs">S (2048,1036)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_19_X1788_Y2300">
+      <circle cx="1788.0" cy="2300.0" r="144.0" class="pad-small-cyl" />
+      <rect x="1668.0" y="2180.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="1788.0" cy="2300.0" r="6" class="pad-center" />
+      <text x="1788.0" y="2140.0" text-anchor="middle" class="label-xs">S (1788,2300)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_21_X3584_Y2484">
+      <circle cx="3584.0" cy="2484.0" r="144.0" class="pad-small-cyl" />
+      <rect x="3464.0" y="2364.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="3584.0" cy="2484.0" r="6" class="pad-center" />
+      <text x="3584.0" y="2324.0" text-anchor="middle" class="label-xs">S (3584,2484)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_22_X0_Y2816">
+      <circle cx="0.0" cy="2816.0" r="144.0" class="pad-small-cyl" />
+      <rect x="-120.0" y="2696.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="0.0" cy="2816.0" r="6" class="pad-center" />
+      <text x="0.0" y="2656.0" text-anchor="middle" class="label-xs">S (0,2816)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_24_X940_Y3308">
+      <circle cx="940.0" cy="3308.0" r="144.0" class="pad-small-cyl" />
+      <rect x="820.0" y="3188.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="940.0" cy="3308.0" r="6" class="pad-center" />
+      <text x="940.0" y="3148.0" text-anchor="middle" class="label-xs">S (940,3308)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_26_X1792_Y4184">
+      <circle cx="1792.0" cy="4184.0" r="144.0" class="pad-small-cyl" />
+      <rect x="1672.0" y="4064.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="1792.0" cy="4184.0" r="6" class="pad-center" />
+      <text x="1792.0" y="4024.0" text-anchor="middle" class="label-xs">S (1792,4184)</text>
+    </g>
+    <g id="Q1_BoostPad_Small_27_X0_Y4240">
+      <circle cx="0.0" cy="4240.0" r="144.0" class="pad-small-cyl" />
+      <rect x="-120.0" y="4120.0" width="240.0" height="240.0" class="pad-small-box" />
+      <circle cx="0.0" cy="4240.0" r="6" class="pad-center" />
+      <text x="0.0" y="4080.0" text-anchor="middle" class="label-xs">S (0,4240)</text>
+    </g>
+  </g>
+
+  <g id="Q1_04_Spawns_And_Demo_Respawns" inkscape:groupmode="layer" inkscape:label="04_Spawns_And_Demo_Respawns">
+    <g id="Q1_Kickoff_0" transform="translate(2048.0, 2560.0) rotate(225.0)">
+      <rect x="-50.234" y="-39.605" width="123.220" height="79.210" stroke="#ff6e40" stroke-width="2" fill="#ff6e40" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-50.884" y="-42.344" width="129.519" height="84.688" stroke="#b388ff" stroke-width="2" fill="#b388ff" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-54.496" y="-41.511" width="133.992" height="83.021" stroke="#69f0ae" stroke-width="2" fill="#69f0ae" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.651" y="-43.585" width="131.320" height="87.170" stroke="#ffd740" stroke-width="2" fill="#ffd740" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.213" y="-42.890" width="130.427" height="85.780" stroke="#ff4081" stroke-width="2" fill="#ff4081" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-46.378" y="-43.350" width="120.507" height="86.699" stroke="#00e5ff" stroke-width="4" fill="#00e5ff" fill-opacity="0.18"  />
+      <line x1="0" y1="0" x2="13.876" y2="0" stroke="#22d3ee" stroke-width="3" />
+      <circle cx="13.876" cy="0" r="6" class="spawn-hb-center" />
+      <line x1="13.876" y1="0" x2="115" y2="0" class="spawn-dir" />
+      <polygon points="125,0 105,-12 105,12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="9" class="spawn-origin" />
+    </g>
+    <text x="2068.0" y="2645.0" class="label-xs">KO Diagonal (2048, 2560)</text>
+    <g id="Q1_Kickoff_1" transform="translate(256.0, 3840.0) rotate(270.0)">
+      <rect x="-50.234" y="-39.605" width="123.220" height="79.210" stroke="#ff6e40" stroke-width="2" fill="#ff6e40" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-50.884" y="-42.344" width="129.519" height="84.688" stroke="#b388ff" stroke-width="2" fill="#b388ff" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-54.496" y="-41.511" width="133.992" height="83.021" stroke="#69f0ae" stroke-width="2" fill="#69f0ae" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.651" y="-43.585" width="131.320" height="87.170" stroke="#ffd740" stroke-width="2" fill="#ffd740" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.213" y="-42.890" width="130.427" height="85.780" stroke="#ff4081" stroke-width="2" fill="#ff4081" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-46.378" y="-43.350" width="120.507" height="86.699" stroke="#00e5ff" stroke-width="4" fill="#00e5ff" fill-opacity="0.18"  />
+      <line x1="0" y1="0" x2="13.876" y2="0" stroke="#22d3ee" stroke-width="3" />
+      <circle cx="13.876" cy="0" r="6" class="spawn-hb-center" />
+      <line x1="13.876" y1="0" x2="115" y2="0" class="spawn-dir" />
+      <polygon points="125,0 105,-12 105,12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="9" class="spawn-origin" />
+    </g>
+    <text x="276.0" y="3925.0" class="label-xs">KO Back (256, 3840)</text>
+    <g id="Q1_Kickoff_2" transform="translate(0.0, 4608.0) rotate(270.0)">
+      <rect x="-50.234" y="-39.605" width="123.220" height="79.210" stroke="#ff6e40" stroke-width="2" fill="#ff6e40" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-50.884" y="-42.344" width="129.519" height="84.688" stroke="#b388ff" stroke-width="2" fill="#b388ff" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-54.496" y="-41.511" width="133.992" height="83.021" stroke="#69f0ae" stroke-width="2" fill="#69f0ae" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.651" y="-43.585" width="131.320" height="87.170" stroke="#ffd740" stroke-width="2" fill="#ffd740" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.213" y="-42.890" width="130.427" height="85.780" stroke="#ff4081" stroke-width="2" fill="#ff4081" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-46.378" y="-43.350" width="120.507" height="86.699" stroke="#00e5ff" stroke-width="4" fill="#00e5ff" fill-opacity="0.18"  />
+      <line x1="0" y1="0" x2="13.876" y2="0" stroke="#22d3ee" stroke-width="3" />
+      <circle cx="13.876" cy="0" r="6" class="spawn-hb-center" />
+      <line x1="13.876" y1="0" x2="115" y2="0" class="spawn-dir" />
+      <polygon points="125,0 105,-12 105,12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="9" class="spawn-origin" />
+    </g>
+    <text x="20.0" y="4693.0" class="label-xs">KO Far Center (0, 4608)</text>
+    <g id="Q1_Demo_0" transform="translate(2304.0, 4608.0) rotate(270.0)">
+      <rect x="-50.234" y="-39.605" width="123.220" height="79.210" stroke="#ff6e40" stroke-width="2" fill="#ff6e40" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-50.884" y="-42.344" width="129.519" height="84.688" stroke="#b388ff" stroke-width="2" fill="#b388ff" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-54.496" y="-41.511" width="133.992" height="83.021" stroke="#69f0ae" stroke-width="2" fill="#69f0ae" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.651" y="-43.585" width="131.320" height="87.170" stroke="#ffd740" stroke-width="2" fill="#ffd740" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.213" y="-42.890" width="130.427" height="85.780" stroke="#ff4081" stroke-width="2" fill="#ff4081" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-46.378" y="-43.350" width="120.507" height="86.699" stroke="#00e5ff" stroke-width="4" fill="#00e5ff" fill-opacity="0.18"  />
+      <line x1="0" y1="0" x2="13.876" y2="0" stroke="#22d3ee" stroke-width="3" />
+      <circle cx="13.876" cy="0" r="6" class="spawn-hb-center" />
+      <line x1="13.876" y1="0" x2="115" y2="0" class="spawn-dir" />
+      <polygon points="125,0 105,-12 105,12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="9" class="demo-origin" />
+    </g>
+    <text x="2304.0" y="4693.0" text-anchor="middle" class="label-xs">Demo Inner (2304, 4608)</text>
+    <g id="Q1_Demo_1" transform="translate(2688.0, 4608.0) rotate(270.0)">
+      <rect x="-50.234" y="-39.605" width="123.220" height="79.210" stroke="#ff6e40" stroke-width="2" fill="#ff6e40" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-50.884" y="-42.344" width="129.519" height="84.688" stroke="#b388ff" stroke-width="2" fill="#b388ff" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-54.496" y="-41.511" width="133.992" height="83.021" stroke="#69f0ae" stroke-width="2" fill="#69f0ae" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.651" y="-43.585" width="131.320" height="87.170" stroke="#ffd740" stroke-width="2" fill="#ffd740" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-56.213" y="-42.890" width="130.427" height="85.780" stroke="#ff4081" stroke-width="2" fill="#ff4081" fill-opacity="0.0" stroke-dasharray="8,6" />
+      <rect x="-46.378" y="-43.350" width="120.507" height="86.699" stroke="#00e5ff" stroke-width="4" fill="#00e5ff" fill-opacity="0.18"  />
+      <line x1="0" y1="0" x2="13.876" y2="0" stroke="#22d3ee" stroke-width="3" />
+      <circle cx="13.876" cy="0" r="6" class="spawn-hb-center" />
+      <line x1="13.876" y1="0" x2="115" y2="0" class="spawn-dir" />
+      <polygon points="125,0 105,-12 105,12" fill="#ffffff" />
+      <circle cx="0" cy="0" r="9" class="demo-origin" />
+    </g>
+    <text x="2688.0" y="4693.0" text-anchor="middle" class="label-xs">Demo Outer (2688, 4608)</text>
+  </g>
+
+</svg>
