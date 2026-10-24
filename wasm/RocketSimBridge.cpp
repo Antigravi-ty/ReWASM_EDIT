@@ -225,11 +225,14 @@ static PhysicsEventBuffer g_eventBuffer = { 0, EVENT_RING_BUFFER_CAPACITY, sizeo
 // Silent resimulation mode flag (suppresses event emission during rollback replay)
 static bool g_silentResim = false;
 
+static void RecordReplayEventToTrack(const PhysicsEvent& ev);
+
 static void PushPhysicsEvent(const PhysicsEvent& ev) {
     if (g_silentResim) return;
     uint32_t slot = g_eventBuffer.writeSeq % EVENT_RING_BUFFER_CAPACITY;
     g_eventBuffer.events[slot] = ev;
     g_eventBuffer.writeSeq++;
+    RecordReplayEventToTrack(ev);
 }
 
 // Active Arena and simulation state
@@ -374,23 +377,94 @@ struct PossessionState {
 };
 static PossessionState g_possession;
 
-// 256MB Dedicated Server Replay Storage
+// 256MB Dedicated Server Multi-Track Replay Storage (Track A: State+Input, Track B: Incidents, Track C: Signals)
 static constexpr size_t REPLAY_STORAGE_BYTES = 256 * 1024 * 1024; // 268,435,456 bytes
+static constexpr size_t REPLAY_HEADER_OFFSET = 0;
+static constexpr size_t REPLAY_STATE_INPUT_STRIDE = sizeof(GameStateBufferPod) + 64; // 1792 + 64 = 1856 bytes (29 cache lines)
+static constexpr size_t REPLAY_MAX_FRAMES = 135000; // 18.75 minutes @ 120Hz = 250,560,000 bytes
+static constexpr size_t REPLAY_STATE_TRACK_OFFSET = 64;
+static constexpr size_t REPLAY_STATE_TRACK_BYTES = REPLAY_MAX_FRAMES * REPLAY_STATE_INPUT_STRIDE;
+static constexpr size_t REPLAY_INCIDENT_TRACK_OFFSET = REPLAY_STATE_TRACK_OFFSET + REPLAY_STATE_TRACK_BYTES; // 250,560,064
+static constexpr size_t REPLAY_MAX_INCIDENTS = 196608; // 12,582,912 bytes (12 MB)
+static constexpr size_t REPLAY_INCIDENT_TRACK_BYTES = REPLAY_MAX_INCIDENTS * sizeof(PhysicsEvent);
+static constexpr size_t REPLAY_SIGNAL_TRACK_OFFSET = REPLAY_INCIDENT_TRACK_OFFSET + REPLAY_INCIDENT_TRACK_BYTES; // 263,142,976
+static constexpr size_t REPLAY_MAX_SIGNALS = 65536; // 4,194,304 bytes (4 MB)
+static constexpr size_t REPLAY_SIGNAL_TRACK_BYTES = REPLAY_MAX_SIGNALS * sizeof(PhysicsEvent);
+static_assert(REPLAY_SIGNAL_TRACK_OFFSET + REPLAY_SIGNAL_TRACK_BYTES <= REPLAY_STORAGE_BYTES, "Replay tracks must fit in 256MB");
+
 static uint8_t* g_replayBuffer = nullptr;
 static size_t g_replayCursor = 0;
+static bool g_replayRecordingActive = true;
 
 #pragma pack(push, 4)
 struct ReplayHeader {
     uint32_t magic;         // 0x5245504C ('REPL')
     uint32_t version;       // 2
-    uint32_t totalFrames;   // recorded frame count
-    uint32_t stateSize;     // bytes per state snapshot
-    uint32_t eventCount;    // recorded incident count
-    uint32_t signalCount;   // recorded signal count
-    uint32_t inputFrames;   // recorded user input frames
-    uint32_t reserved[9];
+    uint32_t totalFrames;   // recorded frame count (Track A)
+    uint32_t stateSize;     // bytes per state snapshot (1792)
+    uint32_t eventCount;    // recorded incident count (Track B)
+    uint32_t signalCount;   // recorded signal count (Track C)
+    uint32_t inputFrames;   // recorded user input frames (Track A)
+    uint32_t stateStride;   // bytes per Track A entry (1856 = 1792 state + 64 controls)
+    uint32_t stateTrackOffset;
+    uint32_t incidentTrackOffset;
+    uint32_t signalTrackOffset;
+    uint32_t reserved[5];
 };
 #pragma pack(pop)
+static_assert(sizeof(ReplayHeader) == 64, "ReplayHeader must be strictly 64 bytes");
+
+static void packReplayControls64(uint8_t* out64) {
+    std::memset(out64, 0, 64);
+    for (int c = 0; c < MAX_ARENA_CARS; c++) {
+        const float* ctrl = &g_controlsBuffer[c * CONTROLS_STRIDE];
+        int thr = std::clamp(static_cast<int>(std::lround(ctrl[0] * 31.0f)), -31, 31) + 31;
+        int str = std::clamp(static_cast<int>(std::lround(ctrl[1] * 31.0f)), -31, 31) + 31;
+        int pit = std::clamp(static_cast<int>(std::lround(ctrl[2] * 3.0f)), -3, 3) + 3;
+        int yaw = std::clamp(static_cast<int>(std::lround(ctrl[3] * 3.0f)), -3, 3) + 3;
+        int rol = std::clamp(static_cast<int>(std::lround(ctrl[4] * 3.0f)), -3, 3) + 3;
+        int jmp = (ctrl[5] > 0.5f) ? 1 : 0;
+        int bst = (ctrl[6] > 0.5f) ? 1 : 0;
+        int hnd = (ctrl[7] > 0.5f) ? 1 : 0;
+
+        uint8_t b0 = static_cast<uint8_t>((thr & 0x3F) | ((str & 0x30) << 2));
+        uint8_t b1 = static_cast<uint8_t>((str & 0x0F) | ((pit & 0x07) << 4) | ((yaw & 0x04) << 5));
+        uint8_t b2 = static_cast<uint8_t>((yaw & 0x03) | ((rol & 0x07) << 2) | (jmp << 5) | (bst << 6) | (hnd << 7));
+        out64[c * 3 + 0] = b0;
+        out64[c * 3 + 1] = b1;
+        out64[c * 3 + 2] = b2;
+
+        // Also store 8-bit signed quantized float controls in bytes [24..63] (5 bytes per car: thr, str, pit, yaw, rol) for lossless analog recovery
+        int baseQuant = 24 + c * 5;
+        out64[baseQuant + 0] = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(ctrl[0], -1.0f, 1.0f) * 127.0f));
+        out64[baseQuant + 1] = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(ctrl[1], -1.0f, 1.0f) * 127.0f));
+        out64[baseQuant + 2] = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(ctrl[2], -1.0f, 1.0f) * 127.0f));
+        out64[baseQuant + 3] = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(ctrl[3], -1.0f, 1.0f) * 127.0f));
+        out64[baseQuant + 4] = static_cast<uint8_t>(static_cast<int8_t>(std::clamp(ctrl[4], -1.0f, 1.0f) * 127.0f));
+    }
+}
+
+static void RecordReplayEventToTrack(const PhysicsEvent& ev) {
+    if (!g_replayBuffer || !g_replayRecordingActive || g_silentResim) return;
+    ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
+    PhysicsEvent copy = ev;
+    if (copy.customInt == 0) {
+        copy.customInt = hdr->totalFrames;
+    }
+    if (copy.type >= 0x01 && copy.type <= 0x3F) {
+        if (hdr->eventCount < REPLAY_MAX_INCIDENTS) {
+            size_t off = REPLAY_INCIDENT_TRACK_OFFSET + static_cast<size_t>(hdr->eventCount) * sizeof(PhysicsEvent);
+            std::memcpy(g_replayBuffer + off, &copy, sizeof(PhysicsEvent));
+            hdr->eventCount++;
+        }
+    } else if (copy.type >= 0x80 && copy.type <= 0xBF) {
+        if (hdr->signalCount < REPLAY_MAX_SIGNALS) {
+            size_t off = REPLAY_SIGNAL_TRACK_OFFSET + static_cast<size_t>(hdr->signalCount) * sizeof(PhysicsEvent);
+            std::memcpy(g_replayBuffer + off, &copy, sizeof(PhysicsEvent));
+            hdr->signalCount++;
+        }
+    }
+}
 
 // Full Atomic State Snapshot Definitions for Deterministic Rollback
 #pragma pack(push, 4)
@@ -1626,28 +1700,39 @@ void physics_pushSignalEvent(uint32_t type, uint32_t tick, float posX, float pos
 }
 
 // 256MB Dedicated Server Replay Storage API
+static void initReplayHeaderFields(ReplayHeader* hdr) {
+    std::memset(hdr, 0, sizeof(ReplayHeader));
+    hdr->magic = 0x5245504C;
+    hdr->version = 2;
+    hdr->totalFrames = 0;
+    hdr->stateSize = sizeof(GameStateBufferPod);
+    hdr->eventCount = 0;
+    hdr->signalCount = 0;
+    hdr->inputFrames = 0;
+    hdr->stateStride = static_cast<uint32_t>(REPLAY_STATE_INPUT_STRIDE);
+    hdr->stateTrackOffset = static_cast<uint32_t>(REPLAY_STATE_TRACK_OFFSET);
+    hdr->incidentTrackOffset = static_cast<uint32_t>(REPLAY_INCIDENT_TRACK_OFFSET);
+    hdr->signalTrackOffset = static_cast<uint32_t>(REPLAY_SIGNAL_TRACK_OFFSET);
+}
+
 void physics_initReplayBuffer() {
     if (!g_replayBuffer) {
         g_replayBuffer = static_cast<uint8_t*>(std::malloc(REPLAY_STORAGE_BYTES));
         if (g_replayBuffer) {
-            std::memset(g_replayBuffer, 0, sizeof(ReplayHeader));
             ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
-            hdr->magic = 0x5245504C;
-            hdr->version = 2;
-            hdr->stateSize = sizeof(GameStateBufferPod);
-            g_replayCursor = sizeof(ReplayHeader);
+            initReplayHeaderFields(hdr);
+            g_replayCursor = REPLAY_STATE_TRACK_OFFSET;
+            g_replayRecordingActive = true;
         }
     }
 }
 
 void physics_clearReplayBuffer() {
     if (g_replayBuffer) {
-        std::memset(g_replayBuffer, 0, sizeof(ReplayHeader));
         ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
-        hdr->magic = 0x5245504C;
-        hdr->version = 2;
-        hdr->stateSize = sizeof(GameStateBufferPod);
-        g_replayCursor = sizeof(ReplayHeader);
+        initReplayHeaderFields(hdr);
+        g_replayCursor = REPLAY_STATE_TRACK_OFFSET;
+        g_replayRecordingActive = true;
     }
 }
 
@@ -1660,14 +1745,20 @@ uint32_t physics_getReplayBufferSize() {
 }
 
 void physics_recordReplayFrame() {
-    if (!g_replayBuffer || !g_arena) return;
+    if (!g_replayBuffer || !g_arena || !g_replayRecordingActive) return;
     ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
-    if (g_replayCursor + sizeof(GameStateBufferPod) + sizeof(g_controlsBuffer) > REPLAY_STORAGE_BYTES) {
-        return; // Full buffer protection
+    if (hdr->totalFrames >= REPLAY_MAX_FRAMES) {
+        return; // Full Track A buffer protection
     }
-    std::memcpy(g_replayBuffer + g_replayCursor, &g_state, sizeof(GameStateBufferPod));
-    g_replayCursor += sizeof(GameStateBufferPod);
+    size_t byteOffset = REPLAY_STATE_TRACK_OFFSET + static_cast<size_t>(hdr->totalFrames) * REPLAY_STATE_INPUT_STRIDE;
+    if (byteOffset + REPLAY_STATE_INPUT_STRIDE > REPLAY_INCIDENT_TRACK_OFFSET) {
+        return;
+    }
+    std::memcpy(g_replayBuffer + byteOffset, &g_state, sizeof(GameStateBufferPod));
+    packReplayControls64(g_replayBuffer + byteOffset + sizeof(GameStateBufferPod));
     hdr->totalFrames++;
+    hdr->inputFrames = hdr->totalFrames;
+    g_replayCursor = byteOffset + REPLAY_STATE_INPUT_STRIDE;
 }
 
 // Zero-copy Event Ring Buffer Pointer & Size
@@ -2160,8 +2251,8 @@ float* physics_getReplayFramePtrByOffset(int ticksAgo) {
     if (hdr->totalFrames == 0) return nullptr;
     int targetIdx = static_cast<int>(hdr->totalFrames) - 1 - std::max(0, ticksAgo);
     targetIdx = std::clamp(targetIdx, 0, static_cast<int>(hdr->totalFrames) - 1);
-    size_t byteOffset = sizeof(ReplayHeader) + static_cast<size_t>(targetIdx) * sizeof(GameStateBufferPod);
-    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_STORAGE_BYTES) return nullptr;
+    size_t byteOffset = REPLAY_STATE_TRACK_OFFSET + static_cast<size_t>(targetIdx) * REPLAY_STATE_INPUT_STRIDE;
+    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_INCIDENT_TRACK_OFFSET) return nullptr;
     return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
 }
 
@@ -2170,9 +2261,58 @@ float* physics_getReplayFramePtrByIndex(int frameIndex) {
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     if (hdr->totalFrames == 0) return nullptr;
     int targetIdx = std::clamp(frameIndex, 0, static_cast<int>(hdr->totalFrames) - 1);
-    size_t byteOffset = sizeof(ReplayHeader) + static_cast<size_t>(targetIdx) * sizeof(GameStateBufferPod);
-    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_STORAGE_BYTES) return nullptr;
+    size_t byteOffset = REPLAY_STATE_TRACK_OFFSET + static_cast<size_t>(targetIdx) * REPLAY_STATE_INPUT_STRIDE;
+    if (byteOffset + sizeof(GameStateBufferPod) > REPLAY_INCIDENT_TRACK_OFFSET) return nullptr;
     return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
+}
+
+uint8_t* physics_getReplayControlsPtrByIndex(int frameIndex) {
+    if (!g_replayBuffer) return nullptr;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    if (hdr->totalFrames == 0) return nullptr;
+    int targetIdx = std::clamp(frameIndex, 0, static_cast<int>(hdr->totalFrames) - 1);
+    size_t byteOffset = REPLAY_STATE_TRACK_OFFSET + static_cast<size_t>(targetIdx) * REPLAY_STATE_INPUT_STRIDE + sizeof(GameStateBufferPod);
+    if (byteOffset + 64 > REPLAY_INCIDENT_TRACK_OFFSET) return nullptr;
+    return g_replayBuffer + byteOffset;
+}
+
+uint8_t* physics_getReplayStateTrackPtr() {
+    if (!g_replayBuffer) return nullptr;
+    return g_replayBuffer + REPLAY_STATE_TRACK_OFFSET;
+}
+
+uint32_t physics_getReplayStateStride() {
+    return static_cast<uint32_t>(REPLAY_STATE_INPUT_STRIDE);
+}
+
+uint8_t* physics_getReplayIncidentTrackPtr() {
+    if (!g_replayBuffer) return nullptr;
+    return g_replayBuffer + REPLAY_INCIDENT_TRACK_OFFSET;
+}
+
+uint32_t physics_getReplayIncidentCount() {
+    if (!g_replayBuffer) return 0;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    return hdr->eventCount;
+}
+
+uint8_t* physics_getReplaySignalTrackPtr() {
+    if (!g_replayBuffer) return nullptr;
+    return g_replayBuffer + REPLAY_SIGNAL_TRACK_OFFSET;
+}
+
+uint32_t physics_getReplaySignalCount() {
+    if (!g_replayBuffer) return 0;
+    const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
+    return hdr->signalCount;
+}
+
+void physics_setReplayRecordingActive(int active) {
+    g_replayRecordingActive = (active != 0);
+}
+
+int physics_getReplayRecordingActive() {
+    return g_replayRecordingActive ? 1 : 0;
 }
 
 // ============================================================================

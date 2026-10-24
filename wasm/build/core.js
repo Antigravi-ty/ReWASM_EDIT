@@ -950,7 +950,7 @@ Module["cwrap"] = cwrap;
 // End JS library exports
 // end include: postlibrary.js
 // Imports from the Wasm binary.
-var _free, _physics_init, _physics_createArena, _physics_step, _physics_stepSilent, _physics_saveState, _physics_restoreState, _physics_saveStateSlot, _physics_restoreStateSlot, _physics_getStateSnapshotSize, _physics_restoreCompactState, _physics_resetKickoff, _physics_resetGoalLatch, _physics_setImpactThresholds, _physics_setSurfaceTaxonomyThresholds, _physics_setDirectionDotThreshold, _physics_getDirectionDotThreshold, _physics_updateBallPrediction, _physics_getBallPredictionPtr, _physics_getBallPredictionCount, _physics_isBallSleeping, _physics_setSimulationFrozen, _physics_setPossessionReportingEnabled, _physics_getPossessionStats, _physics_pushSignalEvent, _physics_initReplayBuffer, _malloc, _physics_clearReplayBuffer, _physics_getReplayBufferPtr, _physics_getReplayBufferSize, _physics_recordReplayFrame, _physics_getEventBufferPtr, _physics_getEventBufferSize, _physics_clearEvents, _physics_getStatePtr, _physics_getStateSize, _physics_getControlsPtr, _physics_getPadInfoPtr, _physics_addCar, _physics_removeCar, _physics_setCarHitbox, _physics_demolishCar, _physics_respawnCar, _physics_getCarCount, _physics_getCarConfig, _physics_setCarState, _physics_setBallState, _physics_setUnlimitedBoost, _physics_getBallOnGround, _physics_getBallRadius, _physics_clearGoalFlag, _physics_controlBall, _physics_initBallPrediction, _physics_setSimControlFlags, _physics_getSimControlFlags, _physics_getBallMotionState, _physics_setPossessionEventEnabled, _physics_getPossessionEventEnabled, _physics_getCurrentPossessionCar, _physics_getCurrentPossessionTeam, _physics_getCarIsJumping, _physics_getCarAirTime, _physics_getCarJumpTime, _physics_getCarAirTimeSinceJump, _physics_resetKickoffAtSpawn, _physics_setCarLinearFactorAndGravity, _physics_setCarCollisionMask, _physics_setArenaMutators, _physics_getReplayFrameCount, _physics_getReplayFramePtrByOffset, _physics_getReplayFramePtrByIndex, _physics_setCarThreeWheels, _physics_getCarThreeWheels, _physics_setArenaPreset, _physics_getArenaPreset, _physics_setGoalVolumeBox, __emscripten_stack_restore, __emscripten_stack_alloc, _emscripten_stack_get_current, memory, __indirect_function_table, wasmMemory;
+var _free, _physics_init, _physics_createArena, _physics_step, _physics_stepSilent, _physics_saveState, _physics_restoreState, _physics_saveStateSlot, _physics_restoreStateSlot, _physics_getStateSnapshotSize, _physics_restoreCompactState, _physics_resetKickoff, _physics_resetGoalLatch, _physics_setImpactThresholds, _physics_setSurfaceTaxonomyThresholds, _physics_setDirectionDotThreshold, _physics_getDirectionDotThreshold, _physics_updateBallPrediction, _physics_getBallPredictionPtr, _physics_getBallPredictionCount, _physics_isBallSleeping, _physics_setSimulationFrozen, _physics_setPossessionReportingEnabled, _physics_getPossessionStats, _physics_pushSignalEvent, _physics_initReplayBuffer, _malloc, _physics_clearReplayBuffer, _physics_getReplayBufferPtr, _physics_getReplayBufferSize, _physics_recordReplayFrame, _physics_getEventBufferPtr, _physics_getEventBufferSize, _physics_clearEvents, _physics_getStatePtr, _physics_getStateSize, _physics_getControlsPtr, _physics_getPadInfoPtr, _physics_addCar, _physics_removeCar, _physics_setCarHitbox, _physics_demolishCar, _physics_respawnCar, _physics_getCarCount, _physics_getCarConfig, _physics_setCarState, _physics_setBallState, _physics_setUnlimitedBoost, _physics_getBallOnGround, _physics_getBallRadius, _physics_clearGoalFlag, _physics_controlBall, _physics_initBallPrediction, _physics_setSimControlFlags, _physics_getSimControlFlags, _physics_getBallMotionState, _physics_setPossessionEventEnabled, _physics_getPossessionEventEnabled, _physics_getCurrentPossessionCar, _physics_getCurrentPossessionTeam, _physics_getCarIsJumping, _physics_getCarAirTime, _physics_getCarJumpTime, _physics_getCarAirTimeSinceJump, _physics_resetKickoffAtSpawn, _physics_setCarLinearFactorAndGravity, _physics_setCarCollisionMask, _physics_setArenaMutators, _physics_getReplayFrameCount, _physics_getReplayFramePtrByOffset, _physics_getReplayFramePtrByIndex, _physics_getReplayControlsPtrByIndex, _physics_getReplayStateTrackPtr, _physics_getReplayStateStride, _physics_getReplayIncidentTrackPtr, _physics_getReplayIncidentCount, _physics_getReplaySignalTrackPtr, _physics_getReplaySignalCount, _physics_setReplayRecordingActive, _physics_getReplayRecordingActive, _physics_setCarThreeWheels, _physics_getCarThreeWheels, _physics_setArenaPreset, _physics_getArenaPreset, _physics_setGoalVolumeBox, __emscripten_stack_restore, __emscripten_stack_alloc, _emscripten_stack_get_current, memory, __indirect_function_table, wasmMemory;
 
 function assignWasmExports(wasmExports) {
   _free = Module["_free"] = wasmExports["n"];
@@ -1024,14 +1024,23 @@ function assignWasmExports(wasmExports) {
   _physics_getReplayFrameCount = Module["_physics_getReplayFrameCount"] = wasmExports["Ba"];
   _physics_getReplayFramePtrByOffset = Module["_physics_getReplayFramePtrByOffset"] = wasmExports["Ca"];
   _physics_getReplayFramePtrByIndex = Module["_physics_getReplayFramePtrByIndex"] = wasmExports["Da"];
-  _physics_setCarThreeWheels = Module["_physics_setCarThreeWheels"] = wasmExports["Ea"];
-  _physics_getCarThreeWheels = Module["_physics_getCarThreeWheels"] = wasmExports["Fa"];
-  _physics_setArenaPreset = Module["_physics_setArenaPreset"] = wasmExports["Ga"];
-  _physics_getArenaPreset = Module["_physics_getArenaPreset"] = wasmExports["Ha"];
-  _physics_setGoalVolumeBox = Module["_physics_setGoalVolumeBox"] = wasmExports["Ia"];
-  __emscripten_stack_restore = wasmExports["Ja"];
-  __emscripten_stack_alloc = wasmExports["Ka"];
-  _emscripten_stack_get_current = wasmExports["La"];
+  _physics_getReplayControlsPtrByIndex = Module["_physics_getReplayControlsPtrByIndex"] = wasmExports["Ea"];
+  _physics_getReplayStateTrackPtr = Module["_physics_getReplayStateTrackPtr"] = wasmExports["Fa"];
+  _physics_getReplayStateStride = Module["_physics_getReplayStateStride"] = wasmExports["Ga"];
+  _physics_getReplayIncidentTrackPtr = Module["_physics_getReplayIncidentTrackPtr"] = wasmExports["Ha"];
+  _physics_getReplayIncidentCount = Module["_physics_getReplayIncidentCount"] = wasmExports["Ia"];
+  _physics_getReplaySignalTrackPtr = Module["_physics_getReplaySignalTrackPtr"] = wasmExports["Ja"];
+  _physics_getReplaySignalCount = Module["_physics_getReplaySignalCount"] = wasmExports["Ka"];
+  _physics_setReplayRecordingActive = Module["_physics_setReplayRecordingActive"] = wasmExports["La"];
+  _physics_getReplayRecordingActive = Module["_physics_getReplayRecordingActive"] = wasmExports["Ma"];
+  _physics_setCarThreeWheels = Module["_physics_setCarThreeWheels"] = wasmExports["Na"];
+  _physics_getCarThreeWheels = Module["_physics_getCarThreeWheels"] = wasmExports["Oa"];
+  _physics_setArenaPreset = Module["_physics_setArenaPreset"] = wasmExports["Pa"];
+  _physics_getArenaPreset = Module["_physics_getArenaPreset"] = wasmExports["Qa"];
+  _physics_setGoalVolumeBox = Module["_physics_setGoalVolumeBox"] = wasmExports["Ra"];
+  __emscripten_stack_restore = wasmExports["Sa"];
+  __emscripten_stack_alloc = wasmExports["Ta"];
+  _emscripten_stack_get_current = wasmExports["Ua"];
   memory = wasmMemory = wasmExports["l"];
   __indirect_function_table = wasmExports["__indirect_function_table"];
 }
