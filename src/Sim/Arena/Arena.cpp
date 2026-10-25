@@ -185,7 +185,7 @@ void Arena::ResetToRandomKickoff(int seed) {
 
 			if (i < teamCars.size()) {
 				CarState spawnState;
-				spawnState.boost = _mutatorConfig.carSpawnBoostAmount;
+				spawnState.boost = teamCars[i]->unlimitedBoost ? RLConst::BOOST_MAX : _mutatorConfig.carSpawnBoostAmount;
 				spawnState.pos = { spawnPos.x, spawnPos.y, CAR_SPAWN_REST_Z };
 				Angle angle = Angle(spawnPos.yawAng, 0, 0);
 				spawnState.isOnGround = true;

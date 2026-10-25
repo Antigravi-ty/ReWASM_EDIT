@@ -67,7 +67,7 @@ void Car::Respawn(GameMode gameMode, int seed, float boostAmount) {
 	newState.pos = Vec(spawnPos.x, spawnPos.y * (team == Team::BLUE ? 1 : -1), CAR_RESPAWN_Z);
 	newState.rotMat = Angle(spawnPos.yawAng + (team == Team::BLUE ? 0 : M_PI), 0.f, 0.f).ToRotMat();
 
-	newState.boost = boostAmount;
+	newState.boost = unlimitedBoost ? BOOST_MAX : boostAmount;
 	this->SetState(newState);
 }
 
@@ -502,6 +502,10 @@ void Car::_UpdateWheels(float tickTime, const MutatorConfig& mutatorConfig, int 
 void Car::_UpdateBoost(float tickTime, const MutatorConfig& mutatorConfig, float forwardSpeed_UU) {
 	using namespace RLConst;
 
+	if (unlimitedBoost) {
+		_internalState.boost = BOOST_MAX;
+	}
+
 	bool hasBoost = _internalState.boost > 0;
 
 	if (hasBoost) { // Update boosting timer
@@ -530,7 +534,8 @@ void Car::_UpdateBoost(float tickTime, const MutatorConfig& mutatorConfig, float
 
 	// Apply boosting force and consume boost
 	if (_internalState.isBoosting) {
-		_internalState.boost = RS_MAX(_internalState.boost - mutatorConfig.boostUsedPerSecond * tickTime, 0);
+		float boostUsedPerSec = unlimitedBoost ? 0.0f : mutatorConfig.boostUsedPerSecond;
+		_internalState.boost = RS_MAX(_internalState.boost - boostUsedPerSec * tickTime, 0);
 		_rigidBody.applyCentralForce(
 			(_internalState.isOnGround ? mutatorConfig.boostAccelGround : mutatorConfig.boostAccelAir) * UU_TO_BT
 			* GetForwardDir() * CAR_MASS_BT
@@ -539,13 +544,16 @@ void Car::_UpdateBoost(float tickTime, const MutatorConfig& mutatorConfig, float
 	} else {
 		_internalState.timeSinceBoosted += tickTime;
 
-		// Recharge boost
-		if (mutatorConfig.rechargeBoostEnabled)
-			if (_internalState.timeSinceBoosted >= mutatorConfig.rechargeBoostDelay)
-				_internalState.boost += mutatorConfig.rechargeBoostPerSecond * tickTime;
+		// Recharge boost (per-car override or arena mutator fallback)
+		bool doRecharge = rechargeBoostOverride ? rechargeBoostEnabled : mutatorConfig.rechargeBoostEnabled;
+		float rDelay = rechargeBoostOverride ? rechargeBoostDelay : mutatorConfig.rechargeBoostDelay;
+		float rRate = rechargeBoostOverride ? rechargeBoostPerSecond : mutatorConfig.rechargeBoostPerSecond;
+		if (doRecharge)
+			if (_internalState.timeSinceBoosted >= rDelay)
+				_internalState.boost += rRate * tickTime;
 	}
 
-	_internalState.boost = RS_MIN(_internalState.boost, RLConst::BOOST_MAX);
+	_internalState.boost = unlimitedBoost ? RLConst::BOOST_MAX : RS_MIN(_internalState.boost, RLConst::BOOST_MAX);
 }
 
 void Car::_UpdateJump(float tickTime, const MutatorConfig& mutatorConfig, bool jumpPressed) {

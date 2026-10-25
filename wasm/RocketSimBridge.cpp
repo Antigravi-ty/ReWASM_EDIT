@@ -312,6 +312,32 @@ struct CarCollisionMask {
 static CarCollisionMask g_carCollisionMasks[MAX_ARENA_CARS];
 static bool g_hasCustomCollisionMask = false;
 
+// Per-car boost settings (unlimited boost, boost pad collectability, auto-recharge rate & delay)
+struct CarBoostSettings {
+    bool unlimitedBoost = false;
+    bool boostCollectable = true;
+    bool rechargeBoostEnabled = false;
+    float rechargeBoostPerSecond = RLConst::RECHARGE_BOOST_PER_SECOND;
+    float rechargeBoostDelay = RLConst::RECHARGE_BOOST_DELAY;
+};
+static CarBoostSettings g_carBoostSettings[MAX_ARENA_CARS];
+
+static void applyCarBoostSettingsToCar(size_t carIndex, bool refillIfUnlimited = false) {
+    if (carIndex >= g_cars.size() || carIndex >= MAX_ARENA_CARS) return;
+    Car* car = g_cars[carIndex];
+    if (!car) return;
+    const CarBoostSettings& bs = g_carBoostSettings[carIndex];
+    car->unlimitedBoost = bs.unlimitedBoost;
+    car->boostCollectable = bs.boostCollectable;
+    car->rechargeBoostOverride = true;
+    car->rechargeBoostEnabled = bs.rechargeBoostEnabled;
+    car->rechargeBoostPerSecond = bs.rechargeBoostPerSecond;
+    car->rechargeBoostDelay = bs.rechargeBoostDelay;
+    if (refillIfUnlimited && bs.unlimitedBoost) {
+        car->_internalState.boost = RLConst::BOOST_MAX;
+    }
+}
+
 static int getCarIndexFast(const Car* car) {
     if (!car) return -1;
     for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
@@ -1045,6 +1071,8 @@ int physics_createArena() {
         g_carTrackers[i] = CarActionTracker();
         g_carOverrides[i] = CarPhysicsOverride();
         g_carCollisionMasks[i] = CarCollisionMask();
+        g_carBoostSettings[i] = CarBoostSettings();
+        g_carBoostSettings[i].unlimitedBoost = g_unlimitedBoost;
         g_carBaseConfigs[i] = CAR_CONFIG_OCTANE;
     }
 
@@ -1145,9 +1173,7 @@ static void executePhysicsStep(int ticks, bool silent) {
                 car->controls.handbrake = (ctrlPtr[7] > 0.5f);
             }
 
-            if (g_unlimitedBoost) {
-                car->_internalState.boost = 100.0f;
-            }
+            applyCarBoostSettingsToCar(i, true);
 
             if (g_carOverrides[i].active) {
                 const CarPhysicsOverride& ov = g_carOverrides[i];
@@ -1157,6 +1183,12 @@ static void executePhysicsStep(int ticks, bool silent) {
         }
 
         g_arena->Step(1);
+
+        for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+            if (g_carBoostSettings[i].unlimitedBoost && g_cars[i]) {
+                g_cars[i]->_internalState.boost = RLConst::BOOST_MAX;
+            }
+        }
 
         // Enforce locked axes after step (clears residual velocity or position drift on 0-factor axes)
         for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
@@ -1377,7 +1409,14 @@ static void executePhysicsStep(int ticks, bool silent) {
                     pEv.type = INCIDENT_BOOST_PICKUP;
                     pEv.tick = static_cast<uint32_t>(g_arena->tickCount > 0 ? g_arena->tickCount - 1 : 0);
                     pEv.posX = padPos.x; pEv.posY = padPos.y; pEv.posZ = padPos.z;
-                    pEv.primaryId = static_cast<uint16_t>(ps.prevLockedCarID < g_cars.size() ? ps.prevLockedCarID : 0xFFFF);
+                    uint16_t pickedCarIdx = 0xFFFF;
+                    for (size_t c = 0; c < g_cars.size() && c < MAX_ARENA_CARS; c++) {
+                        if (g_cars[c] && g_cars[c]->id == ps.prevLockedCarID) {
+                            pickedCarIdx = static_cast<uint16_t>(c);
+                            break;
+                        }
+                    }
+                    pEv.primaryId = pickedCarIdx;
                     pEv.secondaryId = static_cast<uint16_t>(p);
                     pEv.subType = pad->config.isBig ? 1 : 0;
                     PushPhysicsEvent(pEv);
@@ -1568,7 +1607,13 @@ int physics_restoreCompactState(const float* inBuffer, int floatCount) {
 // Export 't'
 void physics_resetKickoff(int seed) {
     if (!g_arena) return;
+    for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+        applyCarBoostSettingsToCar(i, false);
+    }
     g_arena->ResetToRandomKickoff(seed);
+    for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+        applyCarBoostSettingsToCar(i, true);
+    }
     resetPostGoalLatchState();
     g_lastBallWorldHitTick = 0;
     g_firstTouchFired = false;
@@ -1814,9 +1859,11 @@ int physics_addCar(int team, int hitboxIndex) {
     Car* car = g_arena->AddCar(static_cast<Team>(team), config);
     if (!car) return -1;
 
+    size_t newIdx = g_cars.size();
     g_cars.push_back(car);
+    applyCarBoostSettingsToCar(newIdx, true);
     syncStateBuffer();
-    return static_cast<int>(g_cars.size() - 1);
+    return static_cast<int>(newIdx);
 }
 
 int physics_removeCar(int carIndex) {
@@ -1852,6 +1899,7 @@ int physics_setCarHitbox(int carIndex, int hitboxIndex) {
     newCar->SetState(state);
     g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
     g_cars[carIndex] = newCar;
+    applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
 
     syncStateBuffer();
     return 1;
@@ -1870,6 +1918,7 @@ int physics_respawnCar(int carIndex, int seed, float boostAmount) {
     if (!g_arena || carIndex < 0 || carIndex >= static_cast<int>(g_cars.size())) return 0;
     Car* car = g_cars[carIndex];
     if (!car) return 0;
+    applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
     car->Respawn(g_arena->gameMode, seed, boostAmount >= 0.0f ? boostAmount : RLConst::BOOST_SPAWN_AMOUNT);
     g_arena->_bulletWorld.updateSingleAabb(&car->_rigidBody);
     syncStateBuffer();
@@ -1933,9 +1982,82 @@ void physics_setBallState(int carIndexOrNull, float* statePtr) {
 
 void physics_setUnlimitedBoost(int unlimited) {
     g_unlimitedBoost = (unlimited != 0);
-    if (g_arena) {
-        g_arena->_mutatorConfig.boostUsedPerSecond = g_unlimitedBoost ? 0.0f : RLConst::BOOST_USED_PER_SECOND;
+    for (int i = 0; i < MAX_ARENA_CARS; i++) {
+        g_carBoostSettings[i].unlimitedBoost = g_unlimitedBoost;
     }
+    if (g_arena) {
+        for (size_t i = 0; i < g_cars.size() && i < MAX_ARENA_CARS; i++) {
+            applyCarBoostSettingsToCar(i, true);
+        }
+        syncStateBuffer();
+    }
+}
+
+int physics_getUnlimitedBoost() {
+    return g_unlimitedBoost ? 1 : 0;
+}
+
+int physics_setCarUnlimitedBoost(int carIndex, int enabled) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    bool flag = (enabled != 0);
+    g_carBoostSettings[carIndex].unlimitedBoost = flag;
+    if (carIndex == 0) {
+        g_unlimitedBoost = flag;
+    }
+    if (g_arena && carIndex < static_cast<int>(g_cars.size())) {
+        applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), true);
+        syncStateBuffer();
+    }
+    return 1;
+}
+
+int physics_getCarUnlimitedBoost(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    return g_carBoostSettings[carIndex].unlimitedBoost ? 1 : 0;
+}
+
+int physics_setCarBoostCollectable(int carIndex, int collectable) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    g_carBoostSettings[carIndex].boostCollectable = (collectable != 0);
+    if (g_arena && carIndex < static_cast<int>(g_cars.size())) {
+        applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
+    }
+    return 1;
+}
+
+int physics_getCarBoostCollectable(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 1;
+    return g_carBoostSettings[carIndex].boostCollectable ? 1 : 0;
+}
+
+int physics_setCarBoostRecharge(int carIndex, int enabled, float rechargePerSecond, float rechargeDelay) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    g_carBoostSettings[carIndex].rechargeBoostEnabled = (enabled != 0);
+    if (rechargePerSecond >= 0.0f) {
+        g_carBoostSettings[carIndex].rechargeBoostPerSecond = rechargePerSecond;
+    }
+    if (rechargeDelay >= 0.0f) {
+        g_carBoostSettings[carIndex].rechargeBoostDelay = rechargeDelay;
+    }
+    if (g_arena && carIndex < static_cast<int>(g_cars.size())) {
+        applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
+    }
+    return 1;
+}
+
+int physics_getCarBoostRechargeEnabled(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    return g_carBoostSettings[carIndex].rechargeBoostEnabled ? 1 : 0;
+}
+
+float physics_getCarBoostRechargePerSecond(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return RLConst::RECHARGE_BOOST_PER_SECOND;
+    return g_carBoostSettings[carIndex].rechargeBoostPerSecond;
+}
+
+float physics_getCarBoostRechargeDelay(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return RLConst::RECHARGE_BOOST_DELAY;
+    return g_carBoostSettings[carIndex].rechargeBoostDelay;
 }
 
 int physics_getBallOnGround() {
@@ -2088,7 +2210,9 @@ int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
         CarSpawnPos spawnPos = (g_arenaPreset == 1) ? RLConst::ThrowbackStadium::CAR_SPAWN_LOCATIONS[locIdx] : CAR_SPAWN_LOCATIONS_SOCCAR[locIdx];
 
         CarState spawnState;
-        spawnState.boost = g_arena->_mutatorConfig.carSpawnBoostAmount;
+        spawnState.boost = (i < MAX_ARENA_CARS && g_carBoostSettings[i].unlimitedBoost)
+            ? RLConst::BOOST_MAX
+            : g_arena->_mutatorConfig.carSpawnBoostAmount;
         spawnState.pos = Vec(spawnPos.x, spawnPos.y, CAR_SPAWN_REST_Z);
         Angle angle = Angle(spawnPos.yawAng, 0.0f, 0.0f);
         spawnState.isOnGround = true;
@@ -2102,6 +2226,7 @@ int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
         newCar->controls = CarControls();
         g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
         g_cars.push_back(newCar);
+        applyCarBoostSettingsToCar(i, true);
     }
 
     // Clear controls buffer
@@ -2345,6 +2470,7 @@ int physics_setCarThreeWheels(int carIndex, int enabled) {
     }
     g_arena->_bulletWorld.updateSingleAabb(&newCar->_rigidBody);
     g_cars[carIndex] = newCar;
+    applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
     syncStateBuffer();
     return 1;
 }

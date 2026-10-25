@@ -148,6 +148,14 @@ public:
 	// The controls to simulate the car with
 	CarControls controls;
 
+	// Per-car boost mutators & flags
+	bool unlimitedBoost = false;
+	bool boostCollectable = true;
+	bool rechargeBoostOverride = false;
+	bool rechargeBoostEnabled = false;
+	float rechargeBoostPerSecond = RLConst::RECHARGE_BOOST_PER_SECOND;
+	float rechargeBoostDelay = RLConst::RECHARGE_BOOST_DELAY;
+
 	CarState GetState();
 	void SetState(const CarState& state);
 

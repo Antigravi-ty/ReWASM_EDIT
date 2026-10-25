@@ -55,7 +55,7 @@ exported_functions = (
     "'_physics_resetKickoff','_physics_resetGoalLatch','_physics_clearGoalFlag','_physics_getStatePtr',"
     "'_physics_getStateSize','_physics_getControlsPtr','_physics_getPadInfoPtr',"
     "'_physics_addCar','_physics_removeCar','_physics_setCarHitbox','_physics_demolishCar','_physics_respawnCar','_physics_getCarCount','_physics_getCarConfig','_physics_setCarState',"
-    "'_physics_setBallState','_physics_setUnlimitedBoost','_physics_getBallOnGround',"
+    "'_physics_setBallState','_physics_setUnlimitedBoost','_physics_getUnlimitedBoost','_physics_setCarUnlimitedBoost','_physics_getCarUnlimitedBoost','_physics_setCarBoostCollectable','_physics_getCarBoostCollectable','_physics_setCarBoostRecharge','_physics_getCarBoostRechargeEnabled','_physics_getCarBoostRechargePerSecond','_physics_getCarBoostRechargeDelay','_physics_getBallOnGround',"
     "'_physics_getBallRadius','_physics_controlBall',"
     "'_physics_getEventBufferPtr','_physics_getEventBufferSize','_physics_clearEvents',"
     "'_physics_saveState','_physics_restoreState','_physics_saveStateSlot',"
