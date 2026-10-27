@@ -228,6 +228,158 @@ void Arena::ResetToRandomKickoff(int seed) {
 	}
 }
 
+RLConst::CarSpawnPos Arena::ResolveSafeRespawnPoint(Car* targetCar, int desiredPrimaryIdx, int seed) const {
+	using namespace RLConst;
+
+	bool isThrowback = _config.useThrowbackSpawns || _mutatorConfig.useThrowbackGoalVolume;
+	const CarSpawnPos* primaryBase = isThrowback ? ThrowbackStadium::CAR_RESPAWN_LOCATIONS : CAR_RESPAWN_LOCATIONS_SOCCAR;
+	const CarSpawnPos* hiddenBase = CAR_RESPAWN_HID_LOCATIONS_SOCCAR;
+
+	if (gameMode == GameMode::HOOPS) {
+		primaryBase = CAR_RESPAWN_LOCATIONS_HOOPS;
+		hiddenBase = CAR_RESPAWN_LOCATIONS_HOOPS;
+	} else if (gameMode == GameMode::DROPSHOT) {
+		primaryBase = CAR_RESPAWN_LOCATIONS_DROPSHOT;
+		hiddenBase = CAR_RESPAWN_LOCATIONS_DROPSHOT;
+	}
+
+	int primarySlot = desiredPrimaryIdx;
+	if (primarySlot < 0 || primarySlot >= CAR_RESPAWN_LOCATION_AMOUNT) {
+		if (seed >= 0) {
+			primarySlot = Math::RandInt(0, CAR_RESPAWN_LOCATION_AMOUNT, seed);
+		} else {
+			uint32_t carIdVal = targetCar ? targetCar->id : 1u;
+			uint32_t h = static_cast<uint32_t>(tickCount) ^ (carIdVal * 0x9E3779B9u);
+			h ^= h >> 16;
+			h *= 0x85EBCA6Bu;
+			h ^= h >> 13;
+			h *= 0xC2B2AE35u;
+			h ^= h >> 16;
+			primarySlot = static_cast<int>(h % static_cast<uint32_t>(CAR_RESPAWN_LOCATION_AMOUNT));
+		}
+	}
+
+	bool isBlue = (!targetCar || targetCar->team == Team::BLUE);
+	float teamSign = isBlue ? 1.0f : -1.0f;
+	float yawOffset = isBlue ? 0.0f : static_cast<float>(M_PI);
+
+	CarSpawnPos candidates[8];
+	for (int i = 0; i < CAR_RESPAWN_LOCATION_AMOUNT; i++) {
+		candidates[i] = {
+			primaryBase[i].x * teamSign,
+			primaryBase[i].y * teamSign,
+			primaryBase[i].yawAng + yawOffset
+		};
+		candidates[i + 4] = {
+			hiddenBase[i].x * teamSign,
+			hiddenBase[i].y * teamSign,
+			hiddenBase[i].yawAng + yawOffset
+		};
+	}
+
+	Vec desiredPos(candidates[primarySlot].x, candidates[primarySlot].y, CAR_RESPAWN_Z);
+
+	int primaryOrder[4] = { 0, 1, 2, 3 };
+	std::sort(primaryOrder, primaryOrder + 4, [&](int a, int b) {
+		if (a == primarySlot) return true;
+		if (b == primarySlot) return false;
+		float dxA = candidates[a].x - desiredPos.x;
+		float dyA = candidates[a].y - desiredPos.y;
+		float dxB = candidates[b].x - desiredPos.x;
+		float dyB = candidates[b].y - desiredPos.y;
+		float dSqA = dxA * dxA + dyA * dyA;
+		float dSqB = dxB * dxB + dyB * dyB;
+		if (std::abs(dSqA - dSqB) > 1.0f) return dSqA < dSqB;
+		return a < b;
+	});
+
+	int hiddenOrder[4] = { 4, 5, 6, 7 };
+	std::sort(hiddenOrder, hiddenOrder + 4, [&](int a, int b) {
+		float dxA = candidates[a].x - desiredPos.x;
+		float dyA = candidates[a].y - desiredPos.y;
+		float dxB = candidates[b].x - desiredPos.x;
+		float dyB = candidates[b].y - desiredPos.y;
+		float dSqA = dxA * dxA + dyA * dyA;
+		float dSqB = dxB * dxB + dyB * dyB;
+		if (std::abs(dSqA - dSqB) > 1.0f) return dSqA < dSqB;
+		return a < b;
+	});
+
+	int evalOrder[8];
+	for (int i = 0; i < 4; i++) evalOrder[i] = primaryOrder[i];
+	for (int i = 0; i < 4; i++) evalOrder[i + 4] = hiddenOrder[i];
+
+	struct Obstacle {
+		Vec pos;
+		Vec vel;
+		float maxAccel;
+	};
+	Obstacle obstacles[8];
+	int numObstacles = 0;
+
+	if (ball) {
+		Vec bPos = ball->_rigidBody.getWorldTransform().m_origin * BT_TO_UU;
+		Vec bVel = ball->_rigidBody.m_linearVelocity * BT_TO_UU;
+		obstacles[numObstacles++] = { bPos, bVel, 650.0f };
+	}
+
+	for (Car* other : _cars) {
+		if (!other || other == targetCar || other->_internalState.isDemoed) continue;
+		Vec cPos = other->_rigidBody.getWorldTransform().m_origin * BT_TO_UU;
+		Vec cVel = other->_rigidBody.m_linearVelocity * BT_TO_UU;
+		obstacles[numObstacles++] = { cPos, cVel, 1600.0f };
+		if (numObstacles >= 8) break;
+	}
+
+	constexpr float BLOCK_RADIUS = 175.0f;
+	constexpr float BLOCK_RADIUS_SQ = BLOCK_RADIUS * BLOCK_RADIUS;
+	constexpr float SWEPT_HORIZON = 0.20f;
+
+	// Tier 1: 0.20s swept trajectory safety envelope check
+	for (int i = 0; i < 8; i++) {
+		int idx = evalOrder[i];
+		Vec sPos(candidates[idx].x, candidates[idx].y, CAR_RESPAWN_Z);
+		bool safe = true;
+		for (int k = 0; k < numObstacles; k++) {
+			Vec d0 = obstacles[k].pos - sPos;
+			Vec v = obstacles[k].vel;
+			float vLenSq = v.LengthSq();
+			float tStar = 0.0f;
+			if (vLenSq > 1e-4f) {
+				tStar = RS_CLAMP(-(d0.Dot(v)) / vLenSq, 0.0f, SWEPT_HORIZON);
+			}
+			Vec closest = d0 + v * tStar;
+			float reqRadius = BLOCK_RADIUS + 0.5f * obstacles[k].maxAccel * tStar * tStar;
+			if (closest.LengthSq() < reqRadius * reqRadius || d0.LengthSq() < BLOCK_RADIUS_SQ) {
+				safe = false;
+				break;
+			}
+		}
+		if (safe) {
+			return candidates[idx];
+		}
+	}
+
+	// Tier 2: Strict instant non-overlapping clearance (Pigeonhole Principle guaranteed)
+	for (int i = 0; i < 8; i++) {
+		int idx = evalOrder[i];
+		Vec sPos(candidates[idx].x, candidates[idx].y, CAR_RESPAWN_Z);
+		bool safe = true;
+		for (int k = 0; k < numObstacles; k++) {
+			Vec d0 = obstacles[k].pos - sPos;
+			if (d0.LengthSq() < BLOCK_RADIUS_SQ) {
+				safe = false;
+				break;
+			}
+		}
+		if (safe) {
+			return candidates[idx];
+		}
+	}
+
+	return candidates[evalOrder[0]];
+}
+
 void Arena::SetDropshotTilesState(const DropshotTilesState& state) {
 	for (int teamIdx = 0; teamIdx <= 1; teamIdx++) {
 		for (int tileIdx = 0; tileIdx < RLConst::Dropshot::NUM_TILES_PER_TEAM; tileIdx++) {
@@ -724,9 +876,18 @@ void Arena::Step(int ticksToSimulate) {
 		bool ballOnly = _cars.empty();
 
 		bool hasArenaStuff = (gameMode != GameMode::THE_VOID);
+
+		Car* sortedCars[16];
+		size_t numSortedCars = 0;
+		for (Car* car : _cars) {
+			if (numSortedCars < 16) sortedCars[numSortedCars++] = car;
+		}
+		std::sort(sortedCars, sortedCars + numSortedCars, [](const Car* a, const Car* b) {
+			return a->id < b->id;
+		});
 		
-		for (Car* car : _cars)
-			car->_PreTickUpdate(gameMode, tickTime, _mutatorConfig);
+		for (size_t cIdx = 0; cIdx < numSortedCars; cIdx++)
+			sortedCars[cIdx]->_PreTickUpdate(gameMode, tickTime, _mutatorConfig);
 
 		if (hasArenaStuff && !ballOnly) {
 			for (BoostPad* pad : _boostPads)
@@ -739,7 +900,8 @@ void Arena::Step(int ticksToSimulate) {
 		// Update world
 		_bulletWorld.stepSimulation(tickTime, 0, tickTime);
 
-		for (Car* car : _cars) {
+		for (size_t cIdx = 0; cIdx < numSortedCars; cIdx++) {
+			Car* car = sortedCars[cIdx];
 			car->_PostTickUpdate(gameMode, tickTime, _mutatorConfig);
 			car->_FinishPhysicsTick(_mutatorConfig);
 			if (hasArenaStuff) {

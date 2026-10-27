@@ -95,6 +95,10 @@ struct CarState : public PhysState {
 
 	bool isDemoed = false;
 	float demoRespawnTimer = 0;
+	int8_t demoSpawnSelection = -1; // -1: unselected (deterministic random), 0..3: user-selected primary spawn slot
+
+	int32_t flipsRemaining = 1;
+	float flipWindowTimer = RLConst::DOUBLEJUMP_MAX_DELAY;
 
 	BallHitInfo ballHitInfo = BallHitInfo();
 
@@ -123,7 +127,8 @@ struct CarState : public PhysState {
 pos, rotMat, vel, angVel, isOnGround, hasJumped, hasDoubleJumped, hasFlipped, \
 flipRelTorque, jumpTime, isFlipping, flipTime, isJumping, airTimeSinceJump, \
 boost, isBoosting, boostingTime, timeSinceBoosted, supersonicTime, handbrakeVal, isAutoFlipping, \
-autoFlipTimer, autoFlipTorqueScale, isDemoed, demoRespawnTimer, lastControls, \
+autoFlipTimer, autoFlipTorqueScale, isDemoed, demoRespawnTimer, demoSpawnSelection, \
+flipsRemaining, flipWindowTimer, lastControls, \
 worldContact.hasContact, worldContact.contactNormal, \
 carContact.otherCarID, carContact.cooldownTimer
 
@@ -155,6 +160,10 @@ public:
 	bool rechargeBoostEnabled = false;
 	float rechargeBoostPerSecond = RLConst::RECHARGE_BOOST_PER_SECOND;
 	float rechargeBoostDelay = RLConst::RECHARGE_BOOST_DELAY;
+
+	// Per-car multi-flip & jump countdown configuration
+	int32_t maxFlipCount = 1; // 1 = standard RL, >1 = multi-flip, <0 = unlimited flips
+	uint8_t flipTimerMode = 0; // 0 = first jump timed + subsequent 1.25s decay, 1 = all flips 1.25s timed unless Flip Reset
 
 	CarState GetState();
 	void SetState(const CarState& state);

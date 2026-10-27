@@ -140,6 +140,9 @@ public:
 
 	void ResetToRandomKickoff(int seed = -1);
 
+	// Resolve a conflict-free respawn point (4 primary + 4 hidden fallback points) for a demolished car
+	RLConst::CarSpawnPos ResolveSafeRespawnPoint(Car* targetCar, int desiredPrimaryIdx, int seed = -1) const;
+
 	// Returns true if the ball is probably going in, does not account for wall or ceiling bounces
 	// NOTE: Purposefully overestimates, just like the real RL's shot prediction
 	// To check which goal it will score in, use the ball's velocity

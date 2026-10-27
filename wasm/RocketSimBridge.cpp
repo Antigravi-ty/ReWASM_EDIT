@@ -348,13 +348,15 @@ struct CarCollisionMask {
 static CarCollisionMask g_carCollisionMasks[MAX_ARENA_CARS];
 static bool g_hasCustomCollisionMask = false;
 
-// Per-car boost settings (unlimited boost, boost pad collectability, auto-recharge rate & delay)
+// Per-car boost & multi-flip settings (unlimited boost, boost pad collectability, auto-recharge rate & delay, multi-flip count & timer mode)
 struct CarBoostSettings {
     bool unlimitedBoost = false;
     bool boostCollectable = true;
     bool rechargeBoostEnabled = false;
     float rechargeBoostPerSecond = RLConst::RECHARGE_BOOST_PER_SECOND;
     float rechargeBoostDelay = RLConst::RECHARGE_BOOST_DELAY;
+    int32_t maxFlipCount = 1;
+    uint8_t flipTimerMode = 0;
 };
 static CarBoostSettings g_carBoostSettings[MAX_ARENA_CARS];
 
@@ -369,6 +371,8 @@ static void applyCarBoostSettingsToCar(size_t carIndex, bool refillIfUnlimited =
     car->rechargeBoostEnabled = bs.rechargeBoostEnabled;
     car->rechargeBoostPerSecond = bs.rechargeBoostPerSecond;
     car->rechargeBoostDelay = bs.rechargeBoostDelay;
+    car->maxFlipCount = bs.maxFlipCount;
+    car->flipTimerMode = bs.flipTimerMode;
     if (refillIfUnlimited && bs.unlimitedBoost) {
         car->_internalState.boost = RLConst::BOOST_MAX;
     }
@@ -975,8 +979,16 @@ static void syncStateBuffer() {
         pod.boost = cs.boost;
         pod.isOnGround = cs.isOnGround ? 1.0f : 0.0f;
         pod.isSupersonic = cs.isSupersonic ? 1.0f : 0.0f;
-        pod.isDemoed = cs.isDemoed ? 1.0f : 0.0f;
-        pod.hasFlipOrJump = cs.HasFlipOrJump() ? 1.0f : 0.0f;
+        pod.isDemoed = cs.isDemoed ? std::max(0.0001f, cs.demoRespawnTimer) : 0.0f;
+        if (cs.isDemoed) {
+            pod.hasFlipOrJump = 0.0f;
+        } else if (cs.isOnGround) {
+            pod.hasFlipOrJump = (car->maxFlipCount < 0) ? -1.0f : static_cast<float>(car->maxFlipCount);
+        } else if (cs.HasFlipOrJump()) {
+            pod.hasFlipOrJump = static_cast<float>(cs.flipsRemaining);
+        } else {
+            pod.hasFlipOrJump = 0.0f;
+        }
         pod.isBoosting = cs.isBoosting ? 1.0f : 0.0f;
         pod.isFlipping = cs.isFlipping ? 1.0f : 0.0f;
 
@@ -1038,7 +1050,7 @@ static void syncStateBuffer() {
         const CarState& cs = g_cars[i]->_internalState;
         g_state.carJumpAir[i].isJumping = cs.isJumping ? 1.0f : 0.0f;
         g_state.carJumpAir[i].airTime = cs.airTime;
-        g_state.carJumpAir[i].jumpTime = cs.jumpTime;
+        g_state.carJumpAir[i].jumpTime = cs.isDemoed ? static_cast<float>(cs.demoSpawnSelection) : cs.jumpTime;
         g_state.carJumpAir[i].airTimeSinceJump = cs.airTimeSinceJump;
     }
 }
@@ -1570,8 +1582,16 @@ int physics_restoreCompactState(const float* inBuffer, int floatCount) {
         cs.boost = cp[18];
         cs.isOnGround = cp[19] >= 0.5f;
         cs.isSupersonic = cp[20] >= 0.5f;
-        cs.isDemoed = cp[21] >= 0.5f;
-        bool hasFlipOrJump = cp[22] >= 0.5f;
+        cs.isDemoed = cp[21] > 0.0f;
+        if (cs.isDemoed) {
+            cs.demoRespawnTimer = cp[21];
+        } else {
+            cs.demoRespawnTimer = 0.0f;
+            cs.demoSpawnSelection = -1;
+        }
+        int32_t decodedFlips = static_cast<int32_t>(std::lround(cp[22]));
+        bool hasFlipOrJump = (decodedFlips != 0);
+        cs.flipsRemaining = decodedFlips;
         cs.isBoosting = cp[23] >= 0.5f;
         cs.isFlipping = cp[24] >= 0.5f;
 
@@ -1580,8 +1600,17 @@ int physics_restoreCompactState(const float* inBuffer, int floatCount) {
         if (floatCount >= jumpBase + 4) {
             cs.isJumping = inBuffer[jumpBase + 0] >= 0.5f;
             cs.airTime = inBuffer[jumpBase + 1];
-            cs.jumpTime = inBuffer[jumpBase + 2];
+            if (cs.isDemoed) {
+                int sel = static_cast<int>(std::lround(inBuffer[jumpBase + 2]));
+                cs.demoSpawnSelection = static_cast<int8_t>(std::clamp(sel, -1, 3));
+                cs.jumpTime = 0.0f;
+            } else {
+                cs.jumpTime = inBuffer[jumpBase + 2];
+            }
             cs.airTimeSinceJump = inBuffer[jumpBase + 3];
+            cs.flipWindowTimer = cs.isDemoed
+                ? 0.0f
+                : RS_CLAMP(RLConst::DOUBLEJUMP_MAX_DELAY - cs.airTimeSinceJump, 0.0f, RLConst::DOUBLEJUMP_MAX_DELAY);
             if (cs.isJumping) {
                 cs.hasJumped = true;
                 car->controls.jump = true;
@@ -2036,7 +2065,14 @@ void physics_setCarState(int carIndex, float* statePtr) {
     cs.boost = statePtr[18];
     cs.isOnGround = statePtr[19] > 0.5f;
     cs.isSupersonic = statePtr[20] > 0.5f;
-    cs.isDemoed = statePtr[21] > 0.5f;
+    cs.isDemoed = statePtr[21] > 0.0f;
+    if (cs.isDemoed) {
+        cs.demoRespawnTimer = statePtr[21];
+    } else {
+        cs.demoRespawnTimer = 0.0f;
+        cs.demoSpawnSelection = -1;
+    }
+    cs.flipsRemaining = static_cast<int32_t>(std::lround(statePtr[22]));
     cs.isBoosting = statePtr[23] > 0.5f;
     cs.isFlipping = statePtr[24] > 0.5f;
 
@@ -2607,6 +2643,72 @@ void physics_setGoalVolumeBox(int enabled, float halfWidthX, float minY, float m
     if (maxY > 0.0f) mc.goalVolumeMaxY = maxY;
     if (maxZ > 0.0f) mc.goalVolumeMaxZ = maxZ;
     g_arena->SetMutatorConfig(mc);
+}
+
+int physics_setCarMaxFlipCount(int carIndex, int maxFlipCount) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    g_carBoostSettings[carIndex].maxFlipCount = maxFlipCount;
+    if (g_arena && g_cars[carIndex]) {
+        applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
+        if (g_cars[carIndex]->_internalState.isOnGround) {
+            g_cars[carIndex]->_internalState.flipsRemaining = (maxFlipCount < 0) ? -1 : maxFlipCount;
+        }
+        syncStateBuffer();
+    }
+    return 1;
+}
+
+int physics_getCarMaxFlipCount(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 1;
+    return g_carBoostSettings[carIndex].maxFlipCount;
+}
+
+int physics_setCarFlipTimerMode(int carIndex, int mode) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    g_carBoostSettings[carIndex].flipTimerMode = static_cast<uint8_t>(mode != 0 ? 1 : 0);
+    if (g_arena && g_cars[carIndex]) {
+        applyCarBoostSettingsToCar(static_cast<size_t>(carIndex), false);
+    }
+    return 1;
+}
+
+int physics_getCarFlipTimerMode(int carIndex) {
+    if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
+    return static_cast<int>(g_carBoostSettings[carIndex].flipTimerMode);
+}
+
+int physics_setCarDemoSpawnSelection(int carIndex, int slotIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
+    g_cars[carIndex]->_internalState.demoSpawnSelection = static_cast<int8_t>(std::clamp(slotIndex, -1, 3));
+    syncStateBuffer();
+    return 1;
+}
+
+int physics_getCarDemoSpawnSelection(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return -1;
+    return static_cast<int>(g_cars[carIndex]->_internalState.demoSpawnSelection);
+}
+
+float physics_getCarDemoRespawnTimer(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
+    const CarState& cs = g_cars[carIndex]->_internalState;
+    return cs.isDemoed ? cs.demoRespawnTimer : 0.0f;
+}
+
+int physics_getCarFlipsRemaining(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
+    const CarState& cs = g_cars[carIndex]->_internalState;
+    if (cs.isDemoed) return 0;
+    if (cs.isOnGround) return g_cars[carIndex]->maxFlipCount;
+    return cs.flipsRemaining;
+}
+
+float physics_getCarFlipWindowTimer(int carIndex) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
+    const CarState& cs = g_cars[carIndex]->_internalState;
+    if (cs.isDemoed) return 0.0f;
+    if (cs.isOnGround) return RLConst::DOUBLEJUMP_MAX_DELAY;
+    return cs.flipWindowTimer;
 }
 
 } // extern "C" 

@@ -1,4 +1,5 @@
 #include "Car.h"
+#include "../Arena/Arena.h"
 #include "../../RLConst.h"
 
 #include "../../../libsrc/bullet3-3.24/BulletDynamics/Dynamics/btDynamicsWorld.h"
@@ -41,6 +42,9 @@ void Car::SetState(const CarState& state) {
 void Car::Demolish(float respawnDelay) {
 	_internalState.isDemoed = true;
 	_internalState.demoRespawnTimer = respawnDelay;
+	_internalState.demoSpawnSelection = -1;
+	_internalState.flipsRemaining = 0;
+	_internalState.flipWindowTimer = 0.0f;
 }
 
 void Car::Respawn(GameMode gameMode, int seed, float boostAmount) {
@@ -48,26 +52,43 @@ void Car::Respawn(GameMode gameMode, int seed, float boostAmount) {
 
 	CarState newState = CarState();
 
-	int spawnPosIndex = Math::RandInt(0, CAR_RESPAWN_LOCATION_AMOUNT, seed);
+	Arena* arena = (_bulletVehicle.m_dynamicsWorld)
+		? static_cast<Arena*>(_bulletVehicle.m_dynamicsWorld->getWorldUserInfo())
+		: nullptr;
 
-	const CarSpawnPos* spawnPosArray;
-	switch (gameMode) {
-	case GameMode::HOOPS:
-		spawnPosArray = CAR_RESPAWN_LOCATIONS_HOOPS;
-		break;
-	case GameMode::DROPSHOT:
-		spawnPosArray = CAR_RESPAWN_LOCATIONS_DROPSHOT;
-		break;
-	default:
-		spawnPosArray = CAR_RESPAWN_LOCATIONS_SOCCAR;
+	int desiredSlot = static_cast<int>(_internalState.demoSpawnSelection);
+
+	if (arena) {
+		CarSpawnPos resolvedPos = arena->ResolveSafeRespawnPoint(this, desiredSlot, seed);
+		newState.pos = Vec(resolvedPos.x, resolvedPos.y, CAR_RESPAWN_Z);
+		newState.rotMat = Angle(resolvedPos.yawAng, 0.f, 0.f).ToRotMat();
+	} else {
+		int spawnPosIndex = (desiredSlot >= 0 && desiredSlot < CAR_RESPAWN_LOCATION_AMOUNT)
+			? desiredSlot
+			: Math::RandInt(0, CAR_RESPAWN_LOCATION_AMOUNT, seed);
+
+		const CarSpawnPos* spawnPosArray;
+		switch (gameMode) {
+		case GameMode::HOOPS:
+			spawnPosArray = CAR_RESPAWN_LOCATIONS_HOOPS;
+			break;
+		case GameMode::DROPSHOT:
+			spawnPosArray = CAR_RESPAWN_LOCATIONS_DROPSHOT;
+			break;
+		default:
+			spawnPosArray = CAR_RESPAWN_LOCATIONS_SOCCAR;
+		}
+
+		CarSpawnPos spawnPos = spawnPosArray[spawnPosIndex];
+		float teamSign = (team == Team::BLUE) ? 1.0f : -1.0f;
+		newState.pos = Vec(spawnPos.x * teamSign, spawnPos.y * teamSign, CAR_RESPAWN_Z);
+		newState.rotMat = Angle(spawnPos.yawAng + (team == Team::BLUE ? 0.f : M_PI), 0.f, 0.f).ToRotMat();
 	}
 
-	CarSpawnPos spawnPos = spawnPosArray[spawnPosIndex];
-
-	newState.pos = Vec(spawnPos.x, spawnPos.y * (team == Team::BLUE ? 1 : -1), CAR_RESPAWN_Z);
-	newState.rotMat = Angle(spawnPos.yawAng + (team == Team::BLUE ? 0 : M_PI), 0.f, 0.f).ToRotMat();
-
 	newState.boost = unlimitedBoost ? BOOST_MAX : boostAmount;
+	newState.flipsRemaining = (maxFlipCount < 0) ? -1 : maxFlipCount;
+	newState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
+	newState.demoSpawnSelection = -1;
 	this->SetState(newState);
 }
 
@@ -83,6 +104,25 @@ void Car::_PreTickUpdate(GameMode gameMode, float tickTime, const MutatorConfig&
 
 	{ // Update simulation state
 		if (_internalState.isDemoed) {
+			// Detect Left (A / steer < -0.5) or Right (D / steer > 0.5) rising edge to select desired primary spawn slot [0..3]
+			bool steerLeftPressed = (controls.steer < -0.5f) && (_internalState.lastControls.steer >= -0.5f);
+			bool steerRightPressed = (controls.steer > 0.5f) && (_internalState.lastControls.steer <= 0.5f);
+
+			if (steerLeftPressed) {
+				if (_internalState.demoSpawnSelection < 0) {
+					_internalState.demoSpawnSelection = 1; // Inner Left from center
+				} else if (_internalState.demoSpawnSelection > 0) {
+					_internalState.demoSpawnSelection--;
+				}
+			} else if (steerRightPressed) {
+				if (_internalState.demoSpawnSelection < 0) {
+					_internalState.demoSpawnSelection = 2; // Inner Right from center
+				} else if (_internalState.demoSpawnSelection < 3) {
+					_internalState.demoSpawnSelection++;
+				}
+			}
+			_internalState.lastControls = controls;
+
 			_internalState.demoRespawnTimer = RS_MAX(_internalState.demoRespawnTimer - tickTime, 0);
 			if (_internalState.demoRespawnTimer == 0)
 				Respawn(gameMode, -1, mutatorConfig.carSpawnBoostAmount);
@@ -308,9 +348,9 @@ void Car::_BulletSetup(GameMode gameMode, btDynamicsWorld* bulletWorld, const Mu
 }
 
 bool CarState::HasFlipOrJump() const {
-	return 
-		isOnGround || 
-		(!hasFlipped && !hasDoubleJumped && airTimeSinceJump < RLConst::DOUBLEJUMP_MAX_DELAY);
+	if (isDemoed) return false;
+	if (isOnGround) return true;
+	return flipsRemaining != 0 && (flipWindowTimer > 0.0f || (!hasJumped && !hasFlipped && !hasDoubleJumped));
 }
 
 bool CarState::HasFlipReset() const {
@@ -696,6 +736,7 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 	using namespace RLConst;
 
 	float tickTimeScale = tickTime / (1 / 120.f);
+	bool isUnlimitedFlips = (maxFlipCount < 0) || mutatorConfig.unlimitedFlips || mutatorConfig.unlimitedDoubleJumps;
 
 	if (_internalState.isOnGround) {
 		_internalState.hasDoubleJumped = false;
@@ -703,31 +744,64 @@ void Car::_UpdateDoubleJumpOrFlip(float tickTime, const MutatorConfig& mutatorCo
 		_internalState.airTime = 0;
 		_internalState.airTimeSinceJump = 0;
 		_internalState.flipTime = 0;
+		_internalState.flipsRemaining = isUnlimitedFlips ? -1 : maxFlipCount;
+		_internalState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
 	} else {
 		_internalState.airTime += tickTime;
 
-		if (_internalState.hasJumped && !_internalState.isJumping) {
-			_internalState.airTimeSinceJump += tickTime;
-		} else {
+		bool inUnconsumedFlipReset = !_internalState.hasJumped && !_internalState.hasFlipped && !_internalState.hasDoubleJumped;
+		bool isSubsequentMultiFlip = (_internalState.hasFlipped || _internalState.hasDoubleJumped);
+
+		if (inUnconsumedFlipReset || (flipTimerMode == 0 && isSubsequentMultiFlip)) {
+			// Airborne without jumping (or via Flip Reset), or subsequent flip in Mode 0 (only 1st jump flip is timed):
 			_internalState.airTimeSinceJump = 0;
+			_internalState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
+		} else if (_internalState.isJumping) {
+			_internalState.airTimeSinceJump = 0;
+			_internalState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
+		} else if (_internalState.flipsRemaining != 0) {
+			// Active countdown window (1.25s per flip stage)
+			_internalState.airTimeSinceJump += tickTime;
+			_internalState.flipWindowTimer = RS_MAX(DOUBLEJUMP_MAX_DELAY - _internalState.airTimeSinceJump, 0.0f);
+
+			if (_internalState.airTimeSinceJump >= DOUBLEJUMP_MAX_DELAY) {
+				if (isUnlimitedFlips) {
+					_internalState.airTimeSinceJump = 0.0f;
+					_internalState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
+				} else if (_internalState.flipsRemaining > 0) {
+					_internalState.flipsRemaining--;
+					if (_internalState.flipsRemaining > 0) {
+						_internalState.airTimeSinceJump -= DOUBLEJUMP_MAX_DELAY;
+						_internalState.flipWindowTimer = RS_CLAMP(DOUBLEJUMP_MAX_DELAY - _internalState.airTimeSinceJump, 0.0f, DOUBLEJUMP_MAX_DELAY);
+					} else {
+						_internalState.flipWindowTimer = 0.0f;
+					}
+				}
+			}
+		} else {
+			_internalState.airTimeSinceJump = DOUBLEJUMP_MAX_DELAY;
+			_internalState.flipWindowTimer = 0.0f;
 		}
 
-		if (jumpPressed && _internalState.airTimeSinceJump < DOUBLEJUMP_MAX_DELAY) {
+		if (jumpPressed && !_internalState.isJumping && !_internalState.isFlipping) {
 			float inputMagnitude = abs(controls.yaw) + abs(controls.pitch) + abs(controls.roll);
 			bool isFlipInput = inputMagnitude >= config.dodgeDeadzone;
 
-			bool canUse;
-
-			if (isFlipInput) {
-				canUse = (!_internalState.hasDoubleJumped && !_internalState.hasFlipped) || mutatorConfig.unlimitedFlips;
-			} else {
-				canUse = (!_internalState.hasDoubleJumped && !_internalState.hasFlipped) || mutatorConfig.unlimitedDoubleJumps;
-			}
-
-			if (_internalState.isAutoFlipping)
-				canUse = false;
+			bool canUse = !_internalState.isAutoFlipping && (isUnlimitedFlips || _internalState.flipsRemaining > 0);
 
 			if (canUse) {
+				if (!isUnlimitedFlips && _internalState.flipsRemaining > 0) {
+					_internalState.flipsRemaining--;
+				}
+				if (_internalState.flipsRemaining != 0 || isUnlimitedFlips) {
+					// Start a fresh 1.25s window for the next flip in the multi-flip chain
+					_internalState.airTimeSinceJump = 0.0f;
+					_internalState.flipWindowTimer = DOUBLEJUMP_MAX_DELAY;
+				} else {
+					_internalState.airTimeSinceJump = DOUBLEJUMP_MAX_DELAY;
+					_internalState.flipWindowTimer = 0.0f;
+				}
+
 				if (isFlipInput) {
 					// Begin flipping
 					_internalState.flipTime = 0;
