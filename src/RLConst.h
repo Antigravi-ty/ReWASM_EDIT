@@ -391,18 +391,18 @@ namespace RLConst {
 	// For blue team, flip for orange
 	const static CarSpawnPos // For blue team, flip for orange (Ordered strictly Left-to-Right: Far Left, Inner Left, Inner Right, Far Right)
 		CAR_RESPAWN_LOCATIONS_SOCCAR[CAR_RESPAWN_LOCATION_AMOUNT] = {
-		{ -2688, -4608, M_PI / 2 },
-		{ -2304, -4608, M_PI / 2 },
+		{  2688, -4608, M_PI / 2 },
 		{  2304, -4608, M_PI / 2 },
-		{  2688, -4608, M_PI / 2 }
+		{ -2304, -4608, M_PI / 2 },
+		{ -2688, -4608, M_PI / 2 }
 	};
 
 	const static CarSpawnPos // Hidden fallback respawn locations (offset +512 UU forward toward midfield)
 		CAR_RESPAWN_HID_LOCATIONS_SOCCAR[CAR_RESPAWN_LOCATION_AMOUNT] = {
-		{ -2688, -4096, M_PI / 2 },
-		{ -2304, -4096, M_PI / 2 },
+		{  2688, -4096, M_PI / 2 },
 		{  2304, -4096, M_PI / 2 },
-		{  2688, -4096, M_PI / 2 }
+		{ -2304, -4096, M_PI / 2 },
+		{ -2688, -4096, M_PI / 2 }
 	};
 
 	const static CarSpawnPos

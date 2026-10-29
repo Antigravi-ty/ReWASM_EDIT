@@ -18,6 +18,7 @@ subject to the following restrictions:
 #include "../CollisionDispatch/btCollisionDispatcher.h"
 #include "../CollisionDispatch/btCollisionObject.h"
 #include "../CollisionShapes/btConvexShape.h"
+#include "../CollisionShapes/btPolyhedralConvexShape.h"
 #include "../CollisionShapes/btStaticPlaneShape.h"
 #include "../CollisionDispatch/btCollisionObjectWrapper.h"
 
@@ -110,20 +111,44 @@ void btConvexPlaneCollisionAlgorithm::processCollision(const btCollisionObjectWr
 	planeInConvex = convexObjWrap->getWorldTransform().inverse() * planeObjWrap->getWorldTransform();
 	convexInPlaneTrans = planeObjWrap->getWorldTransform().inverse() * convexObjWrap->getWorldTransform();
 
-	btVector3 vtx = convexShape->localGetSupportingVertex(planeInConvex.getBasis() * -planeNormal);
-	btVector3 vtxInPlane = convexInPlaneTrans(vtx);
-	btScalar distance = (planeNormal.dot(vtxInPlane) - planeConstant);
-	hasCollision = distance < m_manifoldPtr->getContactBreakingThreshold()+ resultOut->m_closestPointDistanceThreshold;
 	resultOut->setPersistentManifold(m_manifoldPtr);
-	if (hasCollision)
-	{
-		btVector3 vtxInPlaneProjected = vtxInPlane - distance * planeNormal;
-		btVector3 vtxInPlaneWorld = planeObjWrap->getWorldTransform() * vtxInPlaneProjected;
+	const btScalar breakingThreshold = m_manifoldPtr->getContactBreakingThreshold() + resultOut->m_closestPointDistanceThreshold;
+	const btVector3 normalOnSurfaceB = planeObjWrap->getWorldTransform().getBasis() * planeNormal;
 
-		/// report a contact. internally this will be kept persistent, and contact reduction is done
-		btVector3 normalOnSurfaceB = planeObjWrap->getWorldTransform().getBasis() * planeNormal;
-		btVector3 pOnB = vtxInPlaneWorld;
-		resultOut->addContactPoint(normalOnSurfaceB, pOnB, distance);
+	if (convexShape->isPolyhedral())
+	{
+		m_manifoldPtr->clearManifold();
+		const btPolyhedralConvexShape* polyShape = static_cast<const btPolyhedralConvexShape*>(convexShape);
+		const int numVertices = polyShape->getNumVertices();
+		for (int i = 0; i < numVertices; i++)
+		{
+			btVector3 vtx;
+			polyShape->getVertex(i, vtx);
+			btVector3 vtxInPlane = convexInPlaneTrans(vtx);
+			btScalar distance = (planeNormal.dot(vtxInPlane) - planeConstant);
+			if (distance < breakingThreshold)
+			{
+				btVector3 vtxInPlaneProjected = vtxInPlane - distance * planeNormal;
+				btVector3 vtxInPlaneWorld = planeObjWrap->getWorldTransform() * vtxInPlaneProjected;
+				resultOut->addContactPoint(normalOnSurfaceB, vtxInPlaneWorld, distance);
+			}
+		}
+	}
+	else
+	{
+		btVector3 vtx = convexShape->localGetSupportingVertex(planeInConvex.getBasis() * -planeNormal);
+		btVector3 vtxInPlane = convexInPlaneTrans(vtx);
+		btScalar distance = (planeNormal.dot(vtxInPlane) - planeConstant);
+		hasCollision = distance < breakingThreshold;
+		if (hasCollision)
+		{
+			btVector3 vtxInPlaneProjected = vtxInPlane - distance * planeNormal;
+			btVector3 vtxInPlaneWorld = planeObjWrap->getWorldTransform() * vtxInPlaneProjected;
+
+			/// report a contact. internally this will be kept persistent, and contact reduction is done
+			btVector3 pOnB = vtxInPlaneWorld;
+			resultOut->addContactPoint(normalOnSurfaceB, pOnB, distance);
+		}
 	}
 
 	//the perturbation algorithm doesn't work well with implicit surfaces such as spheres, cylinder and cones:

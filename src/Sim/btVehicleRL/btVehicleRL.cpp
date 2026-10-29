@@ -178,6 +178,7 @@ float btVehicleRL::rayCast(btWheelInfoRL& wheel) {
 			wheel.m_clippedInvContactDotSuspension = 10;
 		}
 
+		wheel.m_extraPushback = 0;
 		if (object->isStaticObject()) { // Compute m_extraPushback when colliding with static object
 			float rayPushbackThresh = (wheel.m_suspensionRestLength1 + wheel.m_wheelsRadius) - RLConst::BTVehicle::SUSPENSION_SUBTRACTION;
 			if (wheelTraceLenSq < rayPushbackThresh) {
