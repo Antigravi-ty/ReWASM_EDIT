@@ -950,8 +950,10 @@ void btSequentialImpulseConstraintSolver::setupContactConstraint(btSolverConstra
 		{
 			positionalError = 0;
 
-			// ROCKETSIM CHANGE: Skip for special (ball) contacts because it ruins ball bounces at low velocities
-			if (!cp.m_isSpecial)
+			// ROCKETSIM CHANGE: Commented out for ball/special contacts because it ruins ball bounces at low velocities;
+			// only apply for direct Car-World contacts (userIndex 1 vs static world) so upside-down cars settle flush on the floor.
+			if (solverConstraint.m_originalContactPoint != NULL && !cp.m_isSpecial &&
+				((rb0 && rb0->getUserIndex() == 1 && !rb1) || (rb1 && rb1->getUserIndex() == 1 && !rb0)))
 				velocityError -= penetration * invTimeStep;
 		}
 		else
