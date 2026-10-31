@@ -100,6 +100,17 @@ struct CarState : public PhysState {
 	int32_t flipsRemaining = 1;
 	float flipWindowTimer = RLConst::DOUBLEJUMP_MAX_DELAY;
 
+	// Last ground surface object type when isOnGround was true (0: None, 1: Ball, 2: Car, 3: World, 4: DropshotTile)
+	uint8_t lastGroundObjectType = 3;
+	// Number of wheels in contact with that object during the last grounded tick
+	uint8_t lastGroundWheelCount = 4;
+	uint16_t _lastGroundPad = 0;
+	// If lastGroundObjectType == 2 (Car), the other car's ID (else 0)
+	uint32_t lastGroundOtherCarID = 0;
+	// Average wheel contact point (in UU) and contact normal during the last grounded tick
+	Vec lastGroundContactPos = { 0, 0, 0 };
+	Vec lastGroundContactNormal = { 0, 0, 1 };
+
 	BallHitInfo ballHitInfo = BallHitInfo();
 
 	// Controls from last tick, set to this->controls after simulation
@@ -128,7 +139,8 @@ pos, rotMat, vel, angVel, isOnGround, hasJumped, hasDoubleJumped, hasFlipped, \
 flipRelTorque, jumpTime, isFlipping, flipTime, isJumping, airTimeSinceJump, \
 boost, isBoosting, boostingTime, timeSinceBoosted, supersonicTime, handbrakeVal, isAutoFlipping, \
 autoFlipTimer, autoFlipTorqueScale, isDemoed, demoRespawnTimer, demoSpawnSelection, \
-flipsRemaining, flipWindowTimer, lastControls, \
+flipsRemaining, flipWindowTimer, lastGroundObjectType, lastGroundWheelCount, \
+lastGroundOtherCarID, lastGroundContactPos, lastGroundContactNormal, lastControls, \
 worldContact.hasContact, worldContact.contactNormal, \
 carContact.otherCarID, carContact.cooldownTimer
 

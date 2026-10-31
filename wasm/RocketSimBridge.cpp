@@ -173,6 +173,28 @@ static constexpr uint32_t SUBTYPE_GOALPOST = 8;
 static constexpr uint32_t SUBTYPE_CROSSBAR = 9;
 static constexpr uint32_t SUBTYPE_OTHER_CURVE = 10;
 
+// Flip Reset Ground Object Categories (packed in PhysicsEvent::flags bits [4..7])
+static constexpr uint32_t FLIP_RESET_OBJ_NONE = 0;
+static constexpr uint32_t FLIP_RESET_OBJ_BALL = 1;
+static constexpr uint32_t FLIP_RESET_OBJ_CAR = 2;
+static constexpr uint32_t FLIP_RESET_OBJ_WORLD = 3;
+
+// Flip Reset Detailed Subtypes (stored in PhysicsEvent::subType for INCIDENT_FLIP_RESET_GAINED)
+static constexpr uint32_t SUBTYPE_FLIP_RESET_NONE = 0;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_BALL = 1;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_CAR = 2;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_CEILING = 3;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_BACKBOARD = 4;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_SIDE_WALL = 5;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_CORNER_45 = 6;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_RAMP_GROUND = 7;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_RAMP_CEILING = 8;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_GOALPOST = 9;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_CROSSBAR = 10;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_FLOOR = 11;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_DROPSHOT_TILE = 12;
+static constexpr uint32_t SUBTYPE_FLIP_RESET_OTHER_WORLD = 13;
+
 // Strict 64-byte (CPU Cache-Line Aligned) Physics Event Structure
 #pragma pack(push, 4)
 struct alignas(64) PhysicsEvent {
@@ -786,6 +808,90 @@ static uint32_t ClassifyBallHitSurface(const Vec& pos, const Vec& normal, bool i
     return SUBTYPE_RAMP_GROUND;
 }
 
+// Detailed surface classifier for Car-World detachment (Flip Reset / Ledge / Ceiling / Wall drop)
+static void ClassifyFlipResetWorldSurface(
+    const Vec& contactPos,
+    const Vec& normal,
+    uint8_t groundObjType,
+    uint32_t& outFlipResetSubType,
+    uint32_t& outSurfaceTag
+) {
+    if (groundObjType == 4) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_DROPSHOT_TILE;
+        outSurfaceTag = SUBTYPE_SURFACE_FLOOR;
+        return;
+    }
+
+    float absX = std::abs(contactPos.x);
+    float absY = std::abs(contactPos.y);
+    float z = contactPos.z;
+    float absNx = std::abs(normal.x);
+    float absNy = std::abs(normal.y);
+    float nz = normal.z;
+
+    // 1. Goalpost & Crossbar lip geometry (near goal mouth at |Y| >= 5040, |X| <= 960, Z <= 720)
+    if (absY >= 5040.0f && absX <= 960.0f && z <= 720.0f) {
+        if (std::abs(z - 642.0f) < 100.0f && absX <= 920.0f) {
+            outFlipResetSubType = SUBTYPE_FLIP_RESET_CROSSBAR;
+            outSurfaceTag = SUBTYPE_CROSSBAR;
+            return;
+        }
+        if (absX >= 800.0f || absY > 5120.0f) {
+            outFlipResetSubType = SUBTYPE_FLIP_RESET_GOALPOST;
+            outSurfaceTag = SUBTYPE_GOALPOST;
+            return;
+        }
+    }
+
+    // 2. Ceiling (strictly downward normal)
+    if (nz <= -0.85f || (z >= 1950.0f && nz <= -0.5f)) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_CEILING;
+        outSurfaceTag = SUBTYPE_SURFACE_CEILING;
+        return;
+    }
+
+    // 3. Floor (strictly upward normal)
+    if (nz >= 0.85f) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_FLOOR;
+        outSurfaceTag = SUBTYPE_SURFACE_FLOOR;
+        return;
+    }
+
+    // 4. Upper / Ceiling Ramp curve (-0.85 < nz < -0.15)
+    if (nz < -0.15f) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_RAMP_CEILING;
+        outSurfaceTag = SUBTYPE_RAMP_CEILING;
+        return;
+    }
+
+    // 5. Lower / Ground Ramp curve (0.15 < nz < 0.85)
+    if (nz > 0.15f) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_RAMP_GROUND;
+        outSurfaceTag = SUBTYPE_RAMP_GROUND;
+        return;
+    }
+
+    // 6. Vertical Walls (|nz| <= 0.15): distinguish 45-degree corner, Backboard, and Side Wall
+    if (absNx >= 0.35f && absNy >= 0.35f) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_CORNER_45;
+        outSurfaceTag = SUBTYPE_SURFACE_CORNER_45;
+        return;
+    }
+    if (absNy >= absNx) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_BACKBOARD;
+        outSurfaceTag = SUBTYPE_SURFACE_BACKBOARD;
+        return;
+    }
+    if (absNx > absNy) {
+        outFlipResetSubType = SUBTYPE_FLIP_RESET_SIDE_WALL;
+        outSurfaceTag = SUBTYPE_SURFACE_SIDE_WALL;
+        return;
+    }
+
+    outFlipResetSubType = SUBTYPE_FLIP_RESET_OTHER_WORLD;
+    outSurfaceTag = SUBTYPE_OTHER_CURVE;
+}
+
 // Ball-World & Goalpost collision callback with Normal Relative Velocity State Machine
 static void onBallWorldCallback(Arena* arena, const Vec& contactPos, const Vec& normal, float speed, bool isGoalpost, void* userInfo) {
     if (g_silentResim) return;
@@ -1331,10 +1437,45 @@ static void executePhysicsStep(int ticks, bool silent) {
                     }
                 }
 
-                // Flip reset gained (direct native GotFlipReset event with car & ball coordinates)
+                // Flip reset gained (native raycast ground-object & surface classification)
                 bool hasFlipReset = cs.GotFlipReset();
-                if (hasFlipReset && !tracker.hadUnlimitedFlip) {
+                if (hasFlipReset && !tracker.hadUnlimitedFlip && cs.lastGroundObjectType != 0) {
                     Vec ballPos = g_arena->ball ? g_arena->ball->GetState().pos : Vec(0, 0, 0);
+                    uint32_t resetObjType = FLIP_RESET_OBJ_NONE;
+                    uint32_t resetSubType = SUBTYPE_FLIP_RESET_NONE;
+                    uint32_t worldSurfaceTag = 0;
+                    uint32_t otherCarIdx = 0xFF;
+
+                    if (cs.lastGroundObjectType == 1) {
+                        resetObjType = FLIP_RESET_OBJ_BALL;
+                        resetSubType = SUBTYPE_FLIP_RESET_BALL;
+                    } else if (cs.lastGroundObjectType == 2) {
+                        resetObjType = FLIP_RESET_OBJ_CAR;
+                        resetSubType = SUBTYPE_FLIP_RESET_CAR;
+                        for (size_t c = 0; c < MAX_ARENA_CARS; c++) {
+                            if (g_cars[c] && g_cars[c]->id == cs.lastGroundOtherCarID) {
+                                otherCarIdx = static_cast<uint32_t>(c);
+                                break;
+                            }
+                        }
+                    } else {
+                        resetObjType = FLIP_RESET_OBJ_WORLD;
+                        ClassifyFlipResetWorldSurface(
+                            cs.lastGroundContactPos,
+                            cs.lastGroundContactNormal,
+                            cs.lastGroundObjectType,
+                            resetSubType,
+                            worldSurfaceTag
+                        );
+                    }
+
+                    uint32_t flags = 0;
+                    if (cs.isSupersonic) flags |= (1u << 0);
+                    if (cs.isBoosting) flags |= (1u << 1);
+                    flags |= ((resetObjType & 0xFu) << 4);
+                    flags |= ((otherCarIdx & 0xFFu) << 8);
+                    flags |= ((worldSurfaceTag & 0xFFu) << 16);
+
                     PhysicsEvent ev = {};
                     ev.type = INCIDENT_FLIP_RESET_GAINED;
                     ev.tick = static_cast<uint32_t>(g_arena->tickCount > 0 ? g_arena->tickCount - 1 : 0);
@@ -1344,9 +1485,15 @@ static void executePhysicsStep(int ticks, bool silent) {
                     ev.normX = ballPos.x;
                     ev.normY = ballPos.y;
                     ev.normZ = ballPos.z;
+                    ev.normalRelVel = cs.lastGroundContactNormal.z;
+                    ev.speed = cs.vel.Length();
+                    ev.impulse = (cs.pos - ballPos).Length();
                     ev.primaryId = static_cast<uint16_t>(i);
                     ev.secondaryId = static_cast<uint16_t>(car->team == Team::ORANGE ? 1 : 0);
-                    ev.subType = 1; // BALL_RESET
+                    ev.subType = resetSubType;
+                    ev.flags = flags;
+                    ev.customFloat = static_cast<float>(cs.lastGroundWheelCount);
+                    ev.customInt = cs.lastGroundOtherCarID;
                     PushPhysicsEvent(ev);
                 }
                 tracker.hadUnlimitedFlip = hasFlipReset;
@@ -1627,10 +1774,28 @@ int physics_restoreCompactState(const float* inBuffer, int floatCount) {
             }
         }
 
+        int contactWheels = 0;
         for (int w = 0; w < 4 && w < car->_bulletVehicle.getNumWheels(); w++) {
             bool wContact = cp[25 + w * 3 + 2] >= 0.5f;
             cs.wheelsWithContact[w] = wContact;
+            if (wContact) contactWheels++;
         }
+
+        if (cs.isOnGround && cs.lastGroundObjectType == 0) {
+            Vec ballPos = g_arena->ball ? g_arena->ball->GetState().pos : Vec(0, 0, -10000.0f);
+            float distToBall = (cs.pos - ballPos).Length();
+            if (distToBall <= 170.0f) {
+                cs.lastGroundObjectType = 1;
+                cs.lastGroundContactPos = ballPos;
+                cs.lastGroundContactNormal = (cs.pos - ballPos).Normalized();
+            } else {
+                cs.lastGroundObjectType = 3;
+                cs.lastGroundContactPos = cs.pos;
+                cs.lastGroundContactNormal = cs.rotMat.up;
+            }
+            cs.lastGroundWheelCount = static_cast<uint8_t>(contactWheels > 0 ? contactWheels : 4);
+        }
+        g_carTrackers[c].hadUnlimitedFlip = cs.GotFlipReset();
 
         car->SetState(cs);
         car->_rigidBody.clearForces();
@@ -2075,6 +2240,21 @@ void physics_setCarState(int carIndex, float* statePtr) {
     cs.flipsRemaining = static_cast<int32_t>(std::lround(statePtr[22]));
     cs.isBoosting = statePtr[23] > 0.5f;
     cs.isFlipping = statePtr[24] > 0.5f;
+    if (cs.isOnGround && cs.lastGroundObjectType == 0) {
+        Vec ballPos = g_arena->ball ? g_arena->ball->GetState().pos : Vec(0, 0, -10000.0f);
+        float distToBall = (cs.pos - ballPos).Length();
+        if (distToBall <= 170.0f) {
+            cs.lastGroundObjectType = 1;
+            cs.lastGroundContactPos = ballPos;
+            cs.lastGroundContactNormal = (cs.pos - ballPos).Normalized();
+        } else {
+            cs.lastGroundObjectType = 3;
+            cs.lastGroundContactPos = cs.pos;
+            cs.lastGroundContactNormal = cs.rotMat.up;
+        }
+        cs.lastGroundWheelCount = 4;
+    }
+    g_carTrackers[carIndex].hadUnlimitedFlip = cs.GotFlipReset();
 
     car->SetState(cs);
     if (g_carOverrides[carIndex].active) {

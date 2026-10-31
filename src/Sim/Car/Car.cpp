@@ -149,16 +149,75 @@ void Car::_PreTickUpdate(GameMode gameMode, float tickTime, const MutatorConfig&
 
 	bool jumpPressed = controls.jump && !_internalState.lastControls.jump;
 
-	// Update wheelsWithContact
+	// Update wheelsWithContact & inspect ground collision objects
 	int numWheelsInContact = 0;
+	int ballWheelContacts = 0;
+	int carWheelContacts = 0;
+	int dropshotWheelContacts = 0;
+	int worldWheelContacts = 0;
+	uint32_t contactedOtherCarID = 0;
+	btVector3 sumContactPtBT(0, 0, 0);
+	btVector3 sumContactNorm(0, 0, 0);
+
 	for (int i = 0; i < _bulletVehicle.m_wheelInfo.size(); i++) {
-		bool inContact = _bulletVehicle.m_wheelInfo[i].m_raycastInfo.m_isInContact;
+		const auto& rayInfo = _bulletVehicle.m_wheelInfo[i].m_raycastInfo;
+		bool inContact = rayInfo.m_isInContact;
 		_internalState.wheelsWithContact[i] = inContact;
 		numWheelsInContact += inContact;
+		if (inContact) {
+			sumContactPtBT += rayInfo.m_contactPointWS;
+			sumContactNorm += rayInfo.m_contactNormalWS;
+			const btCollisionObject* groundObj = static_cast<const btCollisionObject*>(rayInfo.m_groundObject);
+			if (groundObj) {
+				int uIdx = groundObj->getUserIndex();
+				if (uIdx == BT_USERINFO_TYPE_BALL) {
+					ballWheelContacts++;
+				} else if (uIdx == BT_USERINFO_TYPE_CAR) {
+					carWheelContacts++;
+					const Car* otherCar = static_cast<const Car*>(groundObj->getUserPointer());
+					if (otherCar) contactedOtherCarID = otherCar->id;
+				} else if (uIdx == BT_USERINFO_TYPE_DROPSHOT_TILE) {
+					dropshotWheelContacts++;
+				} else {
+					worldWheelContacts++;
+				}
+			} else {
+				worldWheelContacts++;
+			}
+		}
 	}
 
-	{ // Update isOnGround
+	{ // Update isOnGround & record grounded surface object metadata
 		_internalState.isOnGround = numWheelsInContact >= 3;
+		if (_internalState.isOnGround) {
+			btVector3 avgPtUU = (sumContactPtBT / static_cast<float>(numWheelsInContact)) * BT_TO_UU;
+			btVector3 avgNorm = sumContactNorm;
+			if (avgNorm.length2() > 1e-6f) {
+				avgNorm.normalize();
+			} else {
+				avgNorm = btVector3(0, 0, 1);
+			}
+			_internalState.lastGroundContactPos = Vec(avgPtUU.x(), avgPtUU.y(), avgPtUU.z());
+			_internalState.lastGroundContactNormal = Vec(avgNorm.x(), avgNorm.y(), avgNorm.z());
+
+			if (ballWheelContacts >= 3 || (ballWheelContacts >= 2 && ballWheelContacts >= worldWheelContacts && ballWheelContacts >= carWheelContacts)) {
+				_internalState.lastGroundObjectType = 1; // Ball
+				_internalState.lastGroundWheelCount = static_cast<uint8_t>(ballWheelContacts);
+				_internalState.lastGroundOtherCarID = 0;
+			} else if (carWheelContacts >= 3 || (carWheelContacts >= 2 && carWheelContacts >= worldWheelContacts)) {
+				_internalState.lastGroundObjectType = 2; // Car
+				_internalState.lastGroundWheelCount = static_cast<uint8_t>(carWheelContacts);
+				_internalState.lastGroundOtherCarID = contactedOtherCarID;
+			} else if (dropshotWheelContacts >= 2 && dropshotWheelContacts >= worldWheelContacts) {
+				_internalState.lastGroundObjectType = 4; // Dropshot Tile
+				_internalState.lastGroundWheelCount = static_cast<uint8_t>(dropshotWheelContacts);
+				_internalState.lastGroundOtherCarID = 0;
+			} else {
+				_internalState.lastGroundObjectType = 3; // World
+				_internalState.lastGroundWheelCount = static_cast<uint8_t>(worldWheelContacts > 0 ? worldWheelContacts : numWheelsInContact);
+				_internalState.lastGroundOtherCarID = 0;
+			}
+		}
 	}
 
 	float forwardSpeed_UU = _bulletVehicle.getForwardSpeed() * BT_TO_UU;
