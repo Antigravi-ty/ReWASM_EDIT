@@ -3,12 +3,15 @@
 RS_NS_START
 
 BallPredTracker::BallPredTracker(Arena* arena, size_t numPredTicks) : numPredTicks(numPredTicks) {
-	// Make ball pred arena
-	this->ballPredArena = Arena::Create(arena->gameMode, arena->GetArenaConfig(), arena->GetTickRate());
-	lastUpdateTickCount = 0;
+	// Make ball pred arena (always ensure noBallRot is false for full 3D angular velocity fidelity)
+	ArenaConfig predConfig = arena->GetArenaConfig();
+	predConfig.noBallRot = false;
+	this->ballPredArena = Arena::Create(arena->gameMode, predConfig, arena->GetTickRate());
+	this->ballPredArena->SetMutatorConfig(arena->GetMutatorConfig());
+	lastUpdateTickCount = arena->tickCount;
 
 	predData.reserve(numPredTicks);
-	UpdatePredFromArena(arena);
+	ForceUpdateAllPred(arena->ball->GetState());
 }
 
 BallPredTracker::~BallPredTracker() {
@@ -20,12 +23,13 @@ void BallPredTracker::UpdatePredFromArena(Arena* arena) {
 
 	int ticksSinceLastUpdate = arena->tickCount - lastUpdateTickCount;
 	UpdatePredManual(bs, ticksSinceLastUpdate);
+	lastUpdateTickCount = arena->tickCount;
 }
 
 void BallPredTracker::UpdatePredManual(const BallState& curBallState, int ticksSinceLastUpdate) {
 
 	bool needsFullRepred;
-	if (ticksSinceLastUpdate < predData.size()) {
+	if (ticksSinceLastUpdate >= 0 && (size_t)ticksSinceLastUpdate < predData.size()) {
 		
 		if (predData[ticksSinceLastUpdate].Matches(curBallState)) {
 			// We can re-use ball prediction data
@@ -57,7 +61,9 @@ void BallPredTracker::UpdatePredManual(const BallState& curBallState, int ticksS
 		ForceUpdateAllPred(curBallState);
 	}
 
-	lastUpdateTickCount += ticksSinceLastUpdate;
+	if (ticksSinceLastUpdate > 0) {
+		lastUpdateTickCount += ticksSinceLastUpdate;
+	}
 }
 
 void BallPredTracker::ForceUpdateAllPred(const BallState& initialBallState) {

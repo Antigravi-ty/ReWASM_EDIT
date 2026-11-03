@@ -26,17 +26,19 @@ void Arena::SetMutatorConfig(const MutatorConfig& mutatorConfig) {
 	_bulletWorld.setGravity(mutatorConfig.gravity * UU_TO_BT);
 	
 	if (ballChanged) {
-		// We'll need to remake the ball
+		// Preserve current ball state before rebuilding the collision shape and rigidbody
+		BallState prevBallState = ball->GetState();
 		_bulletWorld.removeCollisionObject(&ball->_rigidBody);
 		delete ball->_collisionShape;
 		ball->_BulletSetup(gameMode, &_bulletWorld, mutatorConfig, _config.noBallRot);
+		ball->SetState(prevBallState);
 	}
 
 	if (carMassChanged) {
 		for (Car* car : _cars) {
 			btVector3 newCarInertia;
 			car->_childHitboxShape.calculateLocalInertia(mutatorConfig.carMass, newCarInertia);
-			car->_rigidBody.setMassProps(mutatorConfig.ballMass, newCarInertia);
+			car->_rigidBody.setMassProps(mutatorConfig.carMass, newCarInertia);
 		}
 	}
 
@@ -45,6 +47,8 @@ void Arena::SetMutatorConfig(const MutatorConfig& mutatorConfig) {
 	ball->_rigidBody.setFriction(mutatorConfig.ballWorldFriction);
 	ball->_rigidBody.setRestitution(mutatorConfig.ballWorldRestitution);
 	ball->_rigidBody.setDamping(mutatorConfig.ballDrag, 0);
+	ball->_rigidBody.setActivationState(ACTIVE_TAG);
+	_bulletWorld.updateSingleAabb(&ball->_rigidBody);
 }
 
 Car* Arena::AddCar(Team team, const CarConfig& config) {

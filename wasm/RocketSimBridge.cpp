@@ -17,6 +17,12 @@
 #include <algorithm>
 #include <cstdlib>
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#else
+#define EMSCRIPTEN_KEEPALIVE
+#endif
+
 #include "RocketSim.h"
 #include "Sim/Arena/Arena.h"
 #include "Sim/Car/Car.h"
@@ -442,15 +448,38 @@ static BridgeOverlapFilterCallback g_bridgeOverlapFilter;
 
 // Ball Prediction Pipeline (up to 5.0 seconds = 600 ticks @ 120Hz)
 static constexpr size_t MAX_BALL_PRED_TICKS = 600;
+static constexpr uint32_t BALL_PRED_SLICE_STRIDE = 9;
 #pragma pack(push, 4)
 struct BallPredSlicePod {
     float posX, posY, posZ;
     float velX, velY, velZ;
+    float angVelX, angVelY, angVelZ;
 };
+static_assert(sizeof(BallPredSlicePod) == BALL_PRED_SLICE_STRIDE * sizeof(float), "BallPredSlicePod must be 9 floats (36 bytes)");
 #pragma pack(pop)
 static BallPredSlicePod g_ballPredBuffer[MAX_BALL_PRED_TICKS];
 static uint32_t g_ballPredCount = 0;
 static BallPredTracker* g_ballPredTracker = nullptr;
+
+static constexpr uint32_t MUTATOR_CONFIG_FLOAT_COUNT = 36;
+
+static void syncMutatorsToBallPredTracker() {
+    if (g_arena && g_ballPredTracker && g_ballPredTracker->ballPredArena) {
+        g_ballPredTracker->ballPredArena->SetMutatorConfig(g_arena->GetMutatorConfig());
+        g_ballPredTracker->predData.clear();
+        g_ballPredTracker->lastUpdateTickCount = g_arena->tickCount;
+    }
+}
+
+static void applyArenaMutatorSideEffects() {
+    if (!g_arena) return;
+    for (size_t i = 0; i < MAX_ARENA_CARS; i++) {
+        if (g_carOverrides[i].active && g_cars[i]) {
+            g_cars[i]->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * g_carOverrides[i].gravityScale);
+        }
+    }
+    syncMutatorsToBallPredTracker();
+}
 
 // Dual-Touch Continuous Possession Scoring State
 struct PossessionState {
@@ -1166,7 +1195,7 @@ extern "C" {
 // Export 'physics_init'
 void __wasm_call_ctors();
 
-int physics_init(uint8_t* meshData, int32_t* meshSizes, int chunkCount) {
+EMSCRIPTEN_KEEPALIVE int physics_init(uint8_t* meshData, int32_t* meshSizes, int chunkCount) {
     static bool s_ctorsCalled = false;
     if (!s_ctorsCalled) {
         __wasm_call_ctors();
@@ -1201,7 +1230,7 @@ int physics_init(uint8_t* meshData, int32_t* meshSizes, int chunkCount) {
 }
 
 // Export 'c'
-int physics_createArena() {
+EMSCRIPTEN_KEEPALIVE int physics_createArena() {
     if (g_ballPredTracker) {
         delete g_ballPredTracker;
         g_ballPredTracker = nullptr;
@@ -1640,15 +1669,15 @@ static void executePhysicsStep(int ticks, bool silent) {
 }
 
 // Export 's'
-void physics_step(int ticks) {
+EMSCRIPTEN_KEEPALIVE void physics_step(int ticks) {
     executePhysicsStep(ticks, false);
 }
 
-void physics_stepSilent(int ticks) {
+EMSCRIPTEN_KEEPALIVE void physics_stepSilent(int ticks) {
     executePhysicsStep(ticks, true);
 }
 
-int physics_saveState(float* outBuffer) {
+EMSCRIPTEN_KEEPALIVE int physics_saveState(float* outBuffer) {
     if (!outBuffer) return 0;
     ArenaSnapshotPod snap;
     serializeToSnapshot(snap);
@@ -1656,7 +1685,7 @@ int physics_saveState(float* outBuffer) {
     return 1;
 }
 
-int physics_restoreState(const float* inBuffer) {
+EMSCRIPTEN_KEEPALIVE int physics_restoreState(const float* inBuffer) {
     if (!inBuffer) return 0;
     ArenaSnapshotPod snap;
     std::memcpy((void*)&snap, inBuffer, sizeof(ArenaSnapshotPod));
@@ -1664,7 +1693,7 @@ int physics_restoreState(const float* inBuffer) {
     return 1;
 }
 
-int physics_saveStateSlot(int slot) {
+EMSCRIPTEN_KEEPALIVE int physics_saveStateSlot(int slot) {
     if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
     ArenaSnapshotPod* slots = ensureSnapshotSlots();
     if (!slots) return 0;
@@ -1672,18 +1701,18 @@ int physics_saveStateSlot(int slot) {
     return 1;
 }
 
-int physics_restoreStateSlot(int slot) {
+EMSCRIPTEN_KEEPALIVE int physics_restoreStateSlot(int slot) {
     if (slot < 0 || slot >= MAX_SNAPSHOT_SLOTS) return 0;
     if (!g_snapshotSlots) return 0;
     deserializeFromSnapshot(g_snapshotSlots[slot]);
     return 1;
 }
 
-int physics_getStateSnapshotSize() {
+EMSCRIPTEN_KEEPALIVE int physics_getStateSnapshotSize() {
     return static_cast<int>(sizeof(ArenaSnapshotPod) / sizeof(float));
 }
 
-int physics_restoreCompactState(const float* inBuffer, int floatCount) {
+EMSCRIPTEN_KEEPALIVE int physics_restoreCompactState(const float* inBuffer, int floatCount) {
     if (!g_arena || !inBuffer || floatCount < 410) return 0;
 
     g_arena->tickCount = static_cast<uint64_t>(std::max(0.0f, std::round(inBuffer[0])));
@@ -1841,7 +1870,7 @@ int physics_restoreCompactState(const float* inBuffer, int floatCount) {
 }
 
 // Export 't'
-void physics_resetKickoff(int seed) {
+EMSCRIPTEN_KEEPALIVE void physics_resetKickoff(int seed) {
     if (!g_arena) return;
     for (size_t i = 0; i < MAX_ARENA_CARS; i++) {
         applyCarBoostSettingsToCar(i, false);
@@ -1865,47 +1894,35 @@ void physics_resetKickoff(int seed) {
     syncStateBuffer();
 }
 
-void physics_resetGoalLatch() {
+EMSCRIPTEN_KEEPALIVE void physics_resetGoalLatch() {
     resetPostGoalLatchState();
 }
 
 // Dynamic Impact Threshold Adjustment
-void physics_setImpactThresholds(float ballGround, float ballWall, float carBall, uint32_t cooldownTicks) {
+EMSCRIPTEN_KEEPALIVE void physics_setImpactThresholds(float ballGround, float ballWall, float carBall, uint32_t cooldownTicks) {
     g_threshBallGround = ballGround;
     g_threshBallWall = ballWall;
     g_threshCarBall = carBall;
     g_cooldownTicks = cooldownTicks;
 }
 
-void physics_setSurfaceTaxonomyThresholds(float floorNz, float netNz) {
+EMSCRIPTEN_KEEPALIVE void physics_setSurfaceTaxonomyThresholds(float floorNz, float netNz) {
     g_threshFloorNz = floorNz;
     g_threshNetNz = netNz;
 }
 
-void physics_setDirectionDotThreshold(float minDirDot) {
+EMSCRIPTEN_KEEPALIVE void physics_setDirectionDotThreshold(float minDirDot) {
     g_threshDirDot = minDirDot;
 }
 
-float physics_getDirectionDotThreshold() {
+EMSCRIPTEN_KEEPALIVE float physics_getDirectionDotThreshold() {
     return g_threshDirDot;
 }
 
-// Ball Prediction API (up to 5.0 seconds = 600 ticks @ 120Hz)
-void physics_updateBallPrediction(float maxSeconds) {
-    if (!g_arena || !g_arena->ball) {
-        g_ballPredCount = 0;
-        return;
-    }
-    float seconds = std::clamp(maxSeconds, 0.1f, 5.0f);
-    size_t numTicks = std::min(MAX_BALL_PRED_TICKS, static_cast<size_t>(seconds * 120.0f));
-
-    if (!g_ballPredTracker) {
-        g_ballPredTracker = new BallPredTracker(g_arena, MAX_BALL_PRED_TICKS);
-    }
-    g_ballPredTracker->numPredTicks = numTicks;
-    g_ballPredTracker->ForceUpdateAllPred(g_arena->ball->GetState());
-
-    for (size_t i = 0; i < numTicks && i < g_ballPredTracker->predData.size(); i++) {
+// Ball Prediction API (up to 5.0 seconds = 600 ticks @ 120Hz, 9 floats per slice: pos + vel + angVel)
+static void copyPredTrackerToBuffer(size_t numTicks) {
+    size_t count = std::min(numTicks, g_ballPredTracker->predData.size());
+    for (size_t i = 0; i < count; i++) {
         const BallState& bs = g_ballPredTracker->predData[i];
         g_ballPredBuffer[i].posX = bs.pos.x;
         g_ballPredBuffer[i].posY = bs.pos.y;
@@ -1913,37 +1930,106 @@ void physics_updateBallPrediction(float maxSeconds) {
         g_ballPredBuffer[i].velX = bs.vel.x;
         g_ballPredBuffer[i].velY = bs.vel.y;
         g_ballPredBuffer[i].velZ = bs.vel.z;
+        g_ballPredBuffer[i].angVelX = bs.angVel.x;
+        g_ballPredBuffer[i].angVelY = bs.angVel.y;
+        g_ballPredBuffer[i].angVelZ = bs.angVel.z;
     }
-    g_ballPredCount = static_cast<uint32_t>(numTicks);
+    g_ballPredCount = static_cast<uint32_t>(count);
 }
 
-float* physics_getBallPredictionPtr() {
+static size_t prepareBallPredTracker(float maxSeconds) {
+    float seconds = std::clamp(maxSeconds, 0.1f, 5.0f);
+    size_t numTicks = std::min(MAX_BALL_PRED_TICKS, static_cast<size_t>(seconds * 120.0f));
+    if (!g_ballPredTracker) {
+        g_ballPredTracker = new BallPredTracker(g_arena, numTicks);
+    } else if (g_ballPredTracker->numPredTicks != numTicks) {
+        g_ballPredTracker->numPredTicks = numTicks;
+        g_ballPredTracker->predData.clear();
+    }
+    return numTicks;
+}
+
+EMSCRIPTEN_KEEPALIVE void physics_updateBallPrediction(float maxSeconds) {
+    if (!g_arena || !g_arena->ball) {
+        g_ballPredCount = 0;
+        return;
+    }
+    size_t numTicks = prepareBallPredTracker(maxSeconds);
+    g_ballPredTracker->ForceUpdateAllPred(g_arena->ball->GetState());
+    g_ballPredTracker->lastUpdateTickCount = g_arena->tickCount;
+    copyPredTrackerToBuffer(numTicks);
+}
+
+EMSCRIPTEN_KEEPALIVE void physics_updateBallPredictionIncremental(float maxSeconds) {
+    if (!g_arena || !g_arena->ball) {
+        g_ballPredCount = 0;
+        return;
+    }
+    size_t numTicks = prepareBallPredTracker(maxSeconds);
+    g_ballPredTracker->UpdatePredFromArena(g_arena);
+    copyPredTrackerToBuffer(numTicks);
+}
+
+EMSCRIPTEN_KEEPALIVE void physics_updateBallPredictionManual(float maxSeconds, int ticksSinceLastUpdate) {
+    if (!g_arena || !g_arena->ball) {
+        g_ballPredCount = 0;
+        return;
+    }
+    size_t numTicks = prepareBallPredTracker(maxSeconds);
+    g_ballPredTracker->UpdatePredManual(g_arena->ball->GetState(), ticksSinceLastUpdate);
+    copyPredTrackerToBuffer(numTicks);
+}
+
+EMSCRIPTEN_KEEPALIVE int physics_getBallStateForTime(float predTime, float* outSlice9) {
+    if (!g_arena || !g_arena->ball || !outSlice9) return 0;
+    if (!g_ballPredTracker || g_ballPredTracker->predData.empty()) {
+        physics_updateBallPredictionIncremental(5.0f);
+    }
+    if (!g_ballPredTracker || g_ballPredTracker->predData.empty()) return 0;
+    BallState bs = g_ballPredTracker->GetBallStateForTime(predTime);
+    outSlice9[0] = bs.pos.x;
+    outSlice9[1] = bs.pos.y;
+    outSlice9[2] = bs.pos.z;
+    outSlice9[3] = bs.vel.x;
+    outSlice9[4] = bs.vel.y;
+    outSlice9[5] = bs.vel.z;
+    outSlice9[6] = bs.angVel.x;
+    outSlice9[7] = bs.angVel.y;
+    outSlice9[8] = bs.angVel.z;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getBallPredictionStride() {
+    return BALL_PRED_SLICE_STRIDE;
+}
+
+EMSCRIPTEN_KEEPALIVE float* physics_getBallPredictionPtr() {
     return reinterpret_cast<float*>(g_ballPredBuffer);
 }
 
-uint32_t physics_getBallPredictionCount() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getBallPredictionCount() {
     return g_ballPredCount;
 }
 
 // Ball Sleeping State Inspection
-int physics_isBallSleeping() {
+EMSCRIPTEN_KEEPALIVE int physics_isBallSleeping() {
     if (!g_arena || !g_arena->ball) return 1;
     return (g_arena->ball->_rigidBody.getActivationState() == ISLAND_SLEEPING) ? 1 : 0;
 }
 
 // Simulation Freeze & Monotonic Tick advance
-void physics_setSimulationFrozen(int frozen, uint32_t targetResumeTick, int maskInputs) {
+EMSCRIPTEN_KEEPALIVE void physics_setSimulationFrozen(int frozen, uint32_t targetResumeTick, int maskInputs) {
     g_simulationFrozen = (frozen != 0);
     g_unfreezeAtTick = targetResumeTick;
     g_maskInputs = (maskInputs != 0);
 }
 
 // Possession State Machine API
-void physics_setPossessionReportingEnabled(int enabled) {
+EMSCRIPTEN_KEEPALIVE void physics_setPossessionReportingEnabled(int enabled) {
     g_possession.reportingEnabled = (enabled != 0);
 }
 
-void physics_getPossessionStats(int* outTeam, int* outBluePoints, int* outOrangePoints, float* outTime) {
+EMSCRIPTEN_KEEPALIVE void physics_getPossessionStats(int* outTeam, int* outBluePoints, int* outOrangePoints, float* outTime) {
     if (outTeam) *outTeam = g_possession.currentPossessionTeam;
     if (outBluePoints) *outBluePoints = g_possession.bluePoints;
     if (outOrangePoints) *outOrangePoints = g_possession.orangePoints;
@@ -1951,7 +2037,7 @@ void physics_getPossessionStats(int* outTeam, int* outBluePoints, int* outOrange
 }
 
 // Signal Event Injection (Idempotent goal latch reset on Goal Replay Start / Kickoff Will Start)
-void physics_pushSignalEvent(uint32_t type, uint32_t tick, float posX, float posY, float posZ,
+EMSCRIPTEN_KEEPALIVE void physics_pushSignalEvent(uint32_t type, uint32_t tick, float posX, float posY, float posZ,
                              float normX, float normY, float normZ, uint16_t primaryId,
                              uint16_t secondaryId, uint32_t subType, uint32_t flags,
                              float customFloat, uint32_t customInt) {
@@ -1996,7 +2082,7 @@ static void initReplayHeaderFields(ReplayHeader* hdr) {
     hdr->signalTrackOffset = static_cast<uint32_t>(REPLAY_SIGNAL_TRACK_OFFSET);
 }
 
-void physics_initReplayBuffer() {
+EMSCRIPTEN_KEEPALIVE void physics_initReplayBuffer() {
     if (!g_replayBuffer) {
         g_replayBuffer = static_cast<uint8_t*>(std::malloc(REPLAY_STORAGE_BYTES));
         if (g_replayBuffer) {
@@ -2008,7 +2094,7 @@ void physics_initReplayBuffer() {
     }
 }
 
-void physics_clearReplayBuffer() {
+EMSCRIPTEN_KEEPALIVE void physics_clearReplayBuffer() {
     if (g_replayBuffer) {
         ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
         initReplayHeaderFields(hdr);
@@ -2017,15 +2103,15 @@ void physics_clearReplayBuffer() {
     }
 }
 
-uint8_t* physics_getReplayBufferPtr() {
+EMSCRIPTEN_KEEPALIVE uint8_t* physics_getReplayBufferPtr() {
     return g_replayBuffer;
 }
 
-uint32_t physics_getReplayBufferSize() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getReplayBufferSize() {
     return static_cast<uint32_t>(g_replayCursor);
 }
 
-void physics_recordReplayFrame() {
+EMSCRIPTEN_KEEPALIVE void physics_recordReplayFrame() {
     if (!g_replayBuffer || !g_arena || !g_replayRecordingActive) return;
     ReplayHeader* hdr = reinterpret_cast<ReplayHeader*>(g_replayBuffer);
     if (hdr->totalFrames >= REPLAY_MAX_FRAMES) {
@@ -2043,33 +2129,33 @@ void physics_recordReplayFrame() {
 }
 
 // Zero-copy Event Ring Buffer Pointer & Size
-void* physics_getEventBufferPtr() {
+EMSCRIPTEN_KEEPALIVE void* physics_getEventBufferPtr() {
     return &g_eventBuffer;
 }
 
-int physics_getEventBufferSize() {
+EMSCRIPTEN_KEEPALIVE int physics_getEventBufferSize() {
     return sizeof(PhysicsEventBuffer);
 }
 
-void physics_clearEvents() {
+EMSCRIPTEN_KEEPALIVE void physics_clearEvents() {
     g_eventBuffer.writeSeq = 0;
     g_eventBuffer.droppedCount = 0;
 }
 
 // State Buffer Pointers
-float* physics_getStatePtr() {
+EMSCRIPTEN_KEEPALIVE float* physics_getStatePtr() {
     return g_stateBuffer;
 }
 
-int physics_getStateSize() {
+EMSCRIPTEN_KEEPALIVE int physics_getStateSize() {
     return STATE_BUFFER_SIZE;
 }
 
-float* physics_getControlsPtr() {
+EMSCRIPTEN_KEEPALIVE float* physics_getControlsPtr() {
     return g_controlsBuffer;
 }
 
-float* physics_getPadInfoPtr() {
+EMSCRIPTEN_KEEPALIVE float* physics_getPadInfoPtr() {
     return g_padInfoBuffer;
 }
 
@@ -2087,7 +2173,7 @@ static const CarConfig& getCarConfigForIndex(int hitboxIndex) {
 }
 
 // Car Management (8 Fixed Slots [0..7] with Non-Shifting Removal & Active Slot Bitmask)
-int physics_addCarAtSlot(int carIndex, int team, int hitboxIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_addCarAtSlot(int carIndex, int team, int hitboxIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return -1;
 
     if (g_cars[carIndex]) {
@@ -2109,7 +2195,7 @@ int physics_addCarAtSlot(int carIndex, int team, int hitboxIndex) {
     return carIndex;
 }
 
-int physics_addCar(int team, int hitboxIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_addCar(int team, int hitboxIndex) {
     if (!g_arena) return -1;
     int targetSlot = -1;
     for (int i = 0; i < MAX_ARENA_CARS; i++) {
@@ -2122,7 +2208,7 @@ int physics_addCar(int team, int hitboxIndex) {
     return physics_addCarAtSlot(targetSlot, team, hitboxIndex);
 }
 
-int physics_removeCar(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_removeCar(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
 
     Car* car = g_cars[carIndex];
@@ -2139,19 +2225,19 @@ int physics_removeCar(int carIndex) {
     return ok ? 1 : 0;
 }
 
-int physics_getActiveCarMask() {
+EMSCRIPTEN_KEEPALIVE int physics_getActiveCarMask() {
     return static_cast<int>(getActiveCarMaskInternal());
 }
 
-int physics_isCarSlotActive(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_isCarSlotActive(int carIndex) {
     return (carIndex >= 0 && carIndex < MAX_ARENA_CARS && g_cars[carIndex] != nullptr) ? 1 : 0;
 }
 
-int physics_getActiveCarCount() {
+EMSCRIPTEN_KEEPALIVE int physics_getActiveCarCount() {
     return getActiveCarCountInternal();
 }
 
-int physics_setCarHitbox(int carIndex, int hitboxIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarHitbox(int carIndex, int hitboxIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
 
     Car* oldCar = g_cars[carIndex];
@@ -2186,7 +2272,14 @@ int physics_setCarHitbox(int carIndex, int hitboxIndex) {
     return 1;
 }
 
-int physics_demolishCar(int carIndex, float respawnDelay) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarTeam(int carIndex, int team) {
+    if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
+    g_cars[carIndex]->team = (team == 0) ? Team::BLUE : Team::ORANGE;
+    syncStateBuffer();
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int physics_demolishCar(int carIndex, float respawnDelay) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     Car* car = g_cars[carIndex];
     if (!car) return 0;
@@ -2195,7 +2288,7 @@ int physics_demolishCar(int carIndex, float respawnDelay) {
     return 1;
 }
 
-int physics_respawnCar(int carIndex, int seed, float boostAmount) {
+EMSCRIPTEN_KEEPALIVE int physics_respawnCar(int carIndex, int seed, float boostAmount) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     Car* car = g_cars[carIndex];
     if (!car) return 0;
@@ -2206,15 +2299,15 @@ int physics_respawnCar(int carIndex, int seed, float boostAmount) {
     return 1;
 }
 
-int physics_getCarCount() {
+EMSCRIPTEN_KEEPALIVE int physics_getCarCount() {
     return getCarSpanCountInternal();
 }
 
-void* physics_getCarConfig(int hitboxIndex) {
+EMSCRIPTEN_KEEPALIVE void* physics_getCarConfig(int hitboxIndex) {
     return (void*)&getCarConfigForIndex(hitboxIndex);
 }
 
-void physics_setCarState(int carIndex, float* statePtr) {
+EMSCRIPTEN_KEEPALIVE void physics_setCarState(int carIndex, float* statePtr) {
     if (!g_arena || !statePtr || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return;
 
     Car* car = g_cars[carIndex];
@@ -2264,17 +2357,16 @@ void physics_setCarState(int carIndex, float* statePtr) {
     syncStateBuffer();
 }
 
-void physics_setBallState(int carIndexOrNull, float* statePtr) {
-    float* actualStatePtr = statePtr ? statePtr : reinterpret_cast<float*>(static_cast<uintptr_t>(carIndexOrNull));
-    if (!g_arena || !g_arena->ball || !actualStatePtr) return;
+EMSCRIPTEN_KEEPALIVE void physics_setBallState(float* statePtr) {
+    if (!g_arena || !g_arena->ball || !statePtr) return;
 
     BallState bs = g_arena->ball->GetState();
-    bs.pos = Vec(actualStatePtr[0], actualStatePtr[1], actualStatePtr[2]);
-    bs.rotMat.forward = Vec(actualStatePtr[3], actualStatePtr[4], actualStatePtr[5]);
-    bs.rotMat.right = Vec(actualStatePtr[6], actualStatePtr[7], actualStatePtr[8]);
-    bs.rotMat.up = Vec(actualStatePtr[9], actualStatePtr[10], actualStatePtr[11]);
-    bs.vel = Vec(actualStatePtr[12], actualStatePtr[13], actualStatePtr[14]);
-    bs.angVel = Vec(actualStatePtr[15], actualStatePtr[16], actualStatePtr[17]);
+    bs.pos = Vec(statePtr[0], statePtr[1], statePtr[2]);
+    bs.rotMat.forward = Vec(statePtr[3], statePtr[4], statePtr[5]);
+    bs.rotMat.right = Vec(statePtr[6], statePtr[7], statePtr[8]);
+    bs.rotMat.up = Vec(statePtr[9], statePtr[10], statePtr[11]);
+    bs.vel = Vec(statePtr[12], statePtr[13], statePtr[14]);
+    bs.angVel = Vec(statePtr[15], statePtr[16], statePtr[17]);
 
     g_arena->ball->SetState(bs);
     g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
@@ -2284,7 +2376,7 @@ void physics_setBallState(int carIndexOrNull, float* statePtr) {
     syncStateBuffer();
 }
 
-void physics_setUnlimitedBoost(int unlimited) {
+EMSCRIPTEN_KEEPALIVE void physics_setUnlimitedBoost(int unlimited) {
     g_unlimitedBoost = (unlimited != 0);
     for (int i = 0; i < MAX_ARENA_CARS; i++) {
         g_carBoostSettings[i].unlimitedBoost = g_unlimitedBoost;
@@ -2297,11 +2389,11 @@ void physics_setUnlimitedBoost(int unlimited) {
     }
 }
 
-int physics_getUnlimitedBoost() {
+EMSCRIPTEN_KEEPALIVE int physics_getUnlimitedBoost() {
     return g_unlimitedBoost ? 1 : 0;
 }
 
-int physics_setCarUnlimitedBoost(int carIndex, int enabled) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarUnlimitedBoost(int carIndex, int enabled) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     bool flag = (enabled != 0);
     g_carBoostSettings[carIndex].unlimitedBoost = flag;
@@ -2315,12 +2407,12 @@ int physics_setCarUnlimitedBoost(int carIndex, int enabled) {
     return 1;
 }
 
-int physics_getCarUnlimitedBoost(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarUnlimitedBoost(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     return g_carBoostSettings[carIndex].unlimitedBoost ? 1 : 0;
 }
 
-int physics_setCarBoostCollectable(int carIndex, int collectable) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarBoostCollectable(int carIndex, int collectable) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     g_carBoostSettings[carIndex].boostCollectable = (collectable != 0);
     if (g_arena && g_cars[carIndex]) {
@@ -2329,12 +2421,12 @@ int physics_setCarBoostCollectable(int carIndex, int collectable) {
     return 1;
 }
 
-int physics_getCarBoostCollectable(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarBoostCollectable(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 1;
     return g_carBoostSettings[carIndex].boostCollectable ? 1 : 0;
 }
 
-int physics_setCarBoostRecharge(int carIndex, int enabled, float rechargePerSecond, float rechargeDelay) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarBoostRecharge(int carIndex, int enabled, float rechargePerSecond, float rechargeDelay) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     g_carBoostSettings[carIndex].rechargeBoostEnabled = (enabled != 0);
     if (rechargePerSecond >= 0.0f) {
@@ -2349,82 +2441,41 @@ int physics_setCarBoostRecharge(int carIndex, int enabled, float rechargePerSeco
     return 1;
 }
 
-int physics_getCarBoostRechargeEnabled(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarBoostRechargeEnabled(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     return g_carBoostSettings[carIndex].rechargeBoostEnabled ? 1 : 0;
 }
 
-float physics_getCarBoostRechargePerSecond(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarBoostRechargePerSecond(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return RLConst::RECHARGE_BOOST_PER_SECOND;
     return g_carBoostSettings[carIndex].rechargeBoostPerSecond;
 }
 
-float physics_getCarBoostRechargeDelay(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarBoostRechargeDelay(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return RLConst::RECHARGE_BOOST_DELAY;
     return g_carBoostSettings[carIndex].rechargeBoostDelay;
 }
 
-int physics_getBallOnGround() {
+EMSCRIPTEN_KEEPALIVE int physics_getBallOnGround() {
     if (!g_arena || !g_arena->ball) return 0;
-    return (g_arena->ball->GetState().pos.z <= RLConst::BALL_COLLISION_RADIUS_SOCCAR + 2.0f) ? 1 : 0;
+    float radius = g_arena->_mutatorConfig.ballRadius;
+    return (g_arena->ball->GetState().pos.z <= radius + 2.0f) ? 1 : 0;
 }
 
-float physics_getBallRadius() {
-    return RLConst::BALL_COLLISION_RADIUS_SOCCAR;
+EMSCRIPTEN_KEEPALIVE float physics_getBallRadius() {
+    return g_arena ? g_arena->_mutatorConfig.ballRadius : RLConst::BALL_COLLISION_RADIUS_SOCCAR;
 }
 
-void physics_clearGoalFlag() {
+EMSCRIPTEN_KEEPALIVE void physics_clearGoalFlag() {
     g_goalScoredFlag = 0;
     g_state.header.goalScoredFlag = 0.0f;
 }
 
-int physics_controlBall(int carIndex, int modeIndex) {
-    if (!g_arena || !g_arena->ball || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
-
-    Car* car = g_cars[carIndex];
-    CarState cs = car->GetState();
-    BallState bs = g_arena->ball->GetState();
-
-    switch (modeIndex) {
-    case 0:
-        bs.pos = cs.pos + cs.rotMat.forward * 215.39f;
-        bs.pos.z = 93.25f;
-        bs.vel = Vec(0, 0, 0);
-        bs.angVel = Vec(0, 0, 0);
-        break;
-    case 1:
-        bs.pos = cs.pos + cs.rotMat.forward * 30.0f + Vec(0, 0, 141.33f);
-        bs.vel = Vec(0, 0, 0);
-        bs.angVel = Vec(0, 0, 0);
-        break;
-    case 2:
-        bs.pos = Vec(0, 0, 93.15f);
-        bs.vel = Vec(1735.35f, -2169.19f, 403.76f);
-        bs.angVel = Vec(0, 0, 0);
-        break;
-    case 3:
-        bs.pos = Vec(0, 0, 93.15f);
-        bs.vel = Vec(0, 0, 750.0f);
-        bs.angVel = Vec(0, 0, 0);
-        break;
-    default:
-        return 0;
-    }
-
-    g_arena->ball->SetState(bs);
-    g_arena->_bulletWorld.updateSingleAabb(&g_arena->ball->_rigidBody);
-    if (!g_arena->IsBallScored()) {
-        resetPostGoalLatchState();
-    }
-    syncStateBuffer();
-    return 1;
-}
-
-void physics_initBallPrediction(float maxSeconds) {
+EMSCRIPTEN_KEEPALIVE void physics_initBallPrediction(float maxSeconds) {
     physics_updateBallPrediction(maxSeconds);
 }
 
-void physics_setSimControlFlags(uint32_t flags) {
+EMSCRIPTEN_KEEPALIVE void physics_setSimControlFlags(uint32_t flags) {
     if (flags & 1) {
         physics_setSimulationFrozen(1, 0, 0);
     } else {
@@ -2432,27 +2483,27 @@ void physics_setSimControlFlags(uint32_t flags) {
     }
 }
 
-uint32_t physics_getSimControlFlags() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getSimControlFlags() {
     return g_simulationFrozen ? 1 : 0;
 }
 
-int physics_getBallMotionState() {
+EMSCRIPTEN_KEEPALIVE int physics_getBallMotionState() {
     return (g_arena && g_arena->ball) ? g_arena->ball->_rigidBody.getActivationState() : 0;
 }
 
-void physics_setPossessionEventEnabled(int enabled) {
+EMSCRIPTEN_KEEPALIVE void physics_setPossessionEventEnabled(int enabled) {
     physics_setPossessionReportingEnabled(enabled);
 }
 
-int physics_getPossessionEventEnabled() {
+EMSCRIPTEN_KEEPALIVE int physics_getPossessionEventEnabled() {
     return g_possession.reportingEnabled ? 1 : 0;
 }
 
-int physics_getCurrentPossessionCar() {
+EMSCRIPTEN_KEEPALIVE int physics_getCurrentPossessionCar() {
     return g_possession.lastCarIndex;
 }
 
-int physics_getCurrentPossessionTeam() {
+EMSCRIPTEN_KEEPALIVE int physics_getCurrentPossessionTeam() {
     return g_possession.currentPossessionTeam;
 }
 
@@ -2460,27 +2511,27 @@ int physics_getCurrentPossessionTeam() {
 // PPO RLRL101 (obs_v3) Native Getters & Deterministic Kickoff Spawn Reset
 // ============================================================================
 
-int physics_getCarIsJumping(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarIsJumping(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
     return g_cars[carIndex]->_internalState.isJumping ? 1 : 0;
 }
 
-float physics_getCarAirTime(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarAirTime(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
     return g_cars[carIndex]->_internalState.airTime;
 }
 
-float physics_getCarJumpTime(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarJumpTime(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
     return g_cars[carIndex]->_internalState.jumpTime;
 }
 
-float physics_getCarAirTimeSinceJump(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarAirTimeSinceJump(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
     return g_cars[carIndex]->_internalState.airTimeSinceJump;
 }
 
-int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
+EMSCRIPTEN_KEEPALIVE int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
     if (!g_arena) return 0;
     using namespace RLConst;
 
@@ -2609,7 +2660,7 @@ int physics_resetKickoffAtSpawn(int spawnIndex, int settleTicks) {
 // Stage 2 Multi-Team Extensions: LinearFactor/Gravity, CollisionMask, Mutators, Replay Offset
 // ============================================================================
 
-int physics_setCarLinearFactorAndGravity(int carIndex, float fx, float fy, float fz, float gravityScale) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarLinearFactorAndGravity(int carIndex, float fx, float fy, float fz, float gravityScale) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
 
     Car* car = g_cars[carIndex];
@@ -2628,7 +2679,7 @@ int physics_setCarLinearFactorAndGravity(int carIndex, float fx, float fy, float
     return 1;
 }
 
-int physics_setCarCollisionMask(int carIndex, int interactWithBall, int interactWithCars) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarCollisionMask(int carIndex, int interactWithBall, int interactWithCars) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
 
     g_carCollisionMasks[carIndex].interactWithBall = (interactWithBall != 0);
@@ -2654,7 +2705,7 @@ int physics_setCarCollisionMask(int carIndex, int interactWithBall, int interact
     return 1;
 }
 
-int physics_setArenaMutators(float gravityZ, float boostAccelGround, float boostAccelAir, float ballMaxSpeed, float ballBounciness) {
+EMSCRIPTEN_KEEPALIVE int physics_setArenaMutators(float gravityZ, float boostAccelGround, float boostAccelAir, float ballMaxSpeed, float ballBounciness) {
     if (!g_arena) return 0;
     MutatorConfig mc = g_arena->GetMutatorConfig();
     mc.gravity = Vec(0.0f, 0.0f, gravityZ);
@@ -2663,23 +2714,123 @@ int physics_setArenaMutators(float gravityZ, float boostAccelGround, float boost
     if (ballMaxSpeed > 0.0f) mc.ballMaxSpeed = ballMaxSpeed;
     if (ballBounciness >= 0.0f) mc.ballWorldRestitution = ballBounciness;
     g_arena->SetMutatorConfig(mc);
-
-    // Re-apply per-car gravity scale overrides
-    for (size_t i = 0; i < MAX_ARENA_CARS; i++) {
-        if (g_carOverrides[i].active && g_cars[i]) {
-            g_cars[i]->_rigidBody.setGravity(g_arena->_mutatorConfig.gravity * UU_TO_BT * g_carOverrides[i].gravityScale);
-        }
-    }
+    applyArenaMutatorSideEffects();
     return 1;
 }
 
-uint32_t physics_getReplayFrameCount() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getMutatorConfigSize() {
+    return MUTATOR_CONFIG_FLOAT_COUNT;
+}
+
+EMSCRIPTEN_KEEPALIVE int physics_getMutatorConfig(float* outBuffer) {
+    if (!g_arena || !outBuffer) return 0;
+    const MutatorConfig& mc = g_arena->GetMutatorConfig();
+    outBuffer[0] = mc.gravity.x;
+    outBuffer[1] = mc.gravity.y;
+    outBuffer[2] = mc.gravity.z;
+    outBuffer[3] = mc.carMass;
+    outBuffer[4] = mc.carWorldFriction;
+    outBuffer[5] = mc.carWorldRestitution;
+    outBuffer[6] = mc.ballMass;
+    outBuffer[7] = mc.ballMaxSpeed;
+    outBuffer[8] = mc.ballDrag;
+    outBuffer[9] = mc.ballWorldFriction;
+    outBuffer[10] = mc.ballWorldRestitution;
+    outBuffer[11] = mc.jumpAccel;
+    outBuffer[12] = mc.jumpImmediateForce;
+    outBuffer[13] = mc.boostAccelGround;
+    outBuffer[14] = mc.boostAccelAir;
+    outBuffer[15] = mc.boostUsedPerSecond;
+    outBuffer[16] = mc.respawnDelay;
+    outBuffer[17] = mc.bumpCooldownTime;
+    outBuffer[18] = mc.boostPadCooldown_Big;
+    outBuffer[19] = mc.boostPadCooldown_Small;
+    outBuffer[20] = mc.carSpawnBoostAmount;
+    outBuffer[21] = mc.ballHitExtraForceScale;
+    outBuffer[22] = mc.bumpForceScale;
+    outBuffer[23] = mc.ballRadius;
+    outBuffer[24] = mc.unlimitedFlips ? 1.0f : 0.0f;
+    outBuffer[25] = mc.unlimitedDoubleJumps ? 1.0f : 0.0f;
+    outBuffer[26] = mc.rechargeBoostEnabled ? 1.0f : 0.0f;
+    outBuffer[27] = mc.rechargeBoostPerSecond;
+    outBuffer[28] = mc.rechargeBoostDelay;
+    outBuffer[29] = static_cast<float>(static_cast<int>(mc.demoMode));
+    outBuffer[30] = mc.enableTeamDemos ? 1.0f : 0.0f;
+    outBuffer[31] = mc.goalBaseThresholdY;
+    outBuffer[32] = mc.useThrowbackGoalVolume ? 1.0f : 0.0f;
+    outBuffer[33] = mc.goalVolumeHalfWidthX;
+    outBuffer[34] = mc.goalVolumeMinY;
+    outBuffer[35] = mc.goalVolumeMaxY;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int physics_setMutatorConfig(const float* inBuffer) {
+    if (!g_arena || !inBuffer) return 0;
+    MutatorConfig mc = g_arena->GetMutatorConfig();
+    mc.gravity = Vec(inBuffer[0], inBuffer[1], inBuffer[2]);
+    if (inBuffer[3] > 0.0f) mc.carMass = inBuffer[3];
+    if (inBuffer[4] >= 0.0f) mc.carWorldFriction = inBuffer[4];
+    if (inBuffer[5] >= 0.0f) mc.carWorldRestitution = inBuffer[5];
+    if (inBuffer[6] > 0.0f) mc.ballMass = inBuffer[6];
+    if (inBuffer[7] > 0.0f) mc.ballMaxSpeed = inBuffer[7];
+    if (inBuffer[8] >= 0.0f) mc.ballDrag = inBuffer[8];
+    if (inBuffer[9] >= 0.0f) mc.ballWorldFriction = inBuffer[9];
+    if (inBuffer[10] >= 0.0f) mc.ballWorldRestitution = inBuffer[10];
+    if (inBuffer[11] >= 0.0f) mc.jumpAccel = inBuffer[11];
+    if (inBuffer[12] >= 0.0f) mc.jumpImmediateForce = inBuffer[12];
+    if (inBuffer[13] >= 0.0f) mc.boostAccelGround = inBuffer[13];
+    if (inBuffer[14] >= 0.0f) mc.boostAccelAir = inBuffer[14];
+    if (inBuffer[15] >= 0.0f) mc.boostUsedPerSecond = inBuffer[15];
+    if (inBuffer[16] >= 0.0f) mc.respawnDelay = inBuffer[16];
+    if (inBuffer[17] >= 0.0f) mc.bumpCooldownTime = inBuffer[17];
+    if (inBuffer[18] >= 0.0f) mc.boostPadCooldown_Big = inBuffer[18];
+    if (inBuffer[19] >= 0.0f) mc.boostPadCooldown_Small = inBuffer[19];
+    if (inBuffer[20] >= 0.0f) mc.carSpawnBoostAmount = std::clamp(inBuffer[20], 0.0f, RLConst::BOOST_MAX);
+    if (inBuffer[21] >= 0.0f) mc.ballHitExtraForceScale = inBuffer[21];
+    if (inBuffer[22] >= 0.0f) mc.bumpForceScale = inBuffer[22];
+    if (inBuffer[23] > 1.0f) mc.ballRadius = inBuffer[23];
+    mc.unlimitedFlips = (inBuffer[24] >= 0.5f);
+    mc.unlimitedDoubleJumps = (inBuffer[25] >= 0.5f);
+    mc.rechargeBoostEnabled = (inBuffer[26] >= 0.5f);
+    if (inBuffer[27] >= 0.0f) mc.rechargeBoostPerSecond = inBuffer[27];
+    if (inBuffer[28] >= 0.0f) mc.rechargeBoostDelay = inBuffer[28];
+    int demoModeInt = std::clamp(static_cast<int>(std::lround(inBuffer[29])), 0, 2);
+    mc.demoMode = static_cast<DemoMode>(demoModeInt);
+    mc.enableTeamDemos = (inBuffer[30] >= 0.5f);
+    if (inBuffer[31] > 0.0f) mc.goalBaseThresholdY = inBuffer[31];
+    mc.useThrowbackGoalVolume = (inBuffer[32] >= 0.5f);
+    if (inBuffer[33] > 0.0f) mc.goalVolumeHalfWidthX = inBuffer[33];
+    if (inBuffer[34] > 0.0f) mc.goalVolumeMinY = inBuffer[34];
+    if (inBuffer[35] > 0.0f) mc.goalVolumeMaxY = inBuffer[35];
+
+    g_arena->SetMutatorConfig(mc);
+    applyArenaMutatorSideEffects();
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE int physics_resetMutatorConfig() {
+    if (!g_arena) return 0;
+    MutatorConfig mc(g_arena->gameMode);
+    if (g_arenaPreset == 1) {
+        mc.useThrowbackGoalVolume = true;
+        mc.goalVolumeHalfWidthX = RLConst::ThrowbackStadium::GOAL_VOLUME_HALF_WIDTH_X;
+        mc.goalVolumeMinY = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Y;
+        mc.goalVolumeMaxY = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Y;
+        mc.goalVolumeMinZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MIN_Z;
+        mc.goalVolumeMaxZ = RLConst::ThrowbackStadium::GOAL_VOLUME_MAX_Z;
+    }
+    g_arena->SetMutatorConfig(mc);
+    applyArenaMutatorSideEffects();
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getReplayFrameCount() {
     if (!g_replayBuffer) return 0;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     return hdr->totalFrames;
 }
 
-float* physics_getReplayFramePtrByOffset(int ticksAgo) {
+EMSCRIPTEN_KEEPALIVE float* physics_getReplayFramePtrByOffset(int ticksAgo) {
     if (!g_replayBuffer) return nullptr;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     if (hdr->totalFrames == 0) return nullptr;
@@ -2690,7 +2841,7 @@ float* physics_getReplayFramePtrByOffset(int ticksAgo) {
     return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
 }
 
-float* physics_getReplayFramePtrByIndex(int frameIndex) {
+EMSCRIPTEN_KEEPALIVE float* physics_getReplayFramePtrByIndex(int frameIndex) {
     if (!g_replayBuffer) return nullptr;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     if (hdr->totalFrames == 0) return nullptr;
@@ -2700,7 +2851,7 @@ float* physics_getReplayFramePtrByIndex(int frameIndex) {
     return reinterpret_cast<float*>(g_replayBuffer + byteOffset);
 }
 
-uint8_t* physics_getReplayControlsPtrByIndex(int frameIndex) {
+EMSCRIPTEN_KEEPALIVE uint8_t* physics_getReplayControlsPtrByIndex(int frameIndex) {
     if (!g_replayBuffer) return nullptr;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     if (hdr->totalFrames == 0) return nullptr;
@@ -2710,42 +2861,42 @@ uint8_t* physics_getReplayControlsPtrByIndex(int frameIndex) {
     return g_replayBuffer + byteOffset;
 }
 
-uint8_t* physics_getReplayStateTrackPtr() {
+EMSCRIPTEN_KEEPALIVE uint8_t* physics_getReplayStateTrackPtr() {
     if (!g_replayBuffer) return nullptr;
     return g_replayBuffer + REPLAY_STATE_TRACK_OFFSET;
 }
 
-uint32_t physics_getReplayStateStride() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getReplayStateStride() {
     return static_cast<uint32_t>(REPLAY_STATE_INPUT_STRIDE);
 }
 
-uint8_t* physics_getReplayIncidentTrackPtr() {
+EMSCRIPTEN_KEEPALIVE uint8_t* physics_getReplayIncidentTrackPtr() {
     if (!g_replayBuffer) return nullptr;
     return g_replayBuffer + REPLAY_INCIDENT_TRACK_OFFSET;
 }
 
-uint32_t physics_getReplayIncidentCount() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getReplayIncidentCount() {
     if (!g_replayBuffer) return 0;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     return hdr->eventCount;
 }
 
-uint8_t* physics_getReplaySignalTrackPtr() {
+EMSCRIPTEN_KEEPALIVE uint8_t* physics_getReplaySignalTrackPtr() {
     if (!g_replayBuffer) return nullptr;
     return g_replayBuffer + REPLAY_SIGNAL_TRACK_OFFSET;
 }
 
-uint32_t physics_getReplaySignalCount() {
+EMSCRIPTEN_KEEPALIVE uint32_t physics_getReplaySignalCount() {
     if (!g_replayBuffer) return 0;
     const ReplayHeader* hdr = reinterpret_cast<const ReplayHeader*>(g_replayBuffer);
     return hdr->signalCount;
 }
 
-void physics_setReplayRecordingActive(int active) {
+EMSCRIPTEN_KEEPALIVE void physics_setReplayRecordingActive(int active) {
     g_replayRecordingActive = (active != 0);
 }
 
-int physics_getReplayRecordingActive() {
+EMSCRIPTEN_KEEPALIVE int physics_getReplayRecordingActive() {
     return g_replayRecordingActive ? 1 : 0;
 }
 
@@ -2753,7 +2904,7 @@ int physics_getReplayRecordingActive() {
 // Three-Wheeler ("三蹦子" / Confidential_ThirdWheel_Test) & Throwback Stadium APIs
 // ============================================================================
 
-int physics_setCarThreeWheels(int carIndex, int enabled) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarThreeWheels(int carIndex, int enabled) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     Car* oldCar = g_cars[carIndex];
     if (!oldCar) return 0;
@@ -2787,12 +2938,12 @@ int physics_setCarThreeWheels(int carIndex, int enabled) {
     return 1;
 }
 
-int physics_getCarThreeWheels(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarThreeWheels(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
     return g_cars[carIndex]->config.threeWheels ? 1 : 0;
 }
 
-void physics_setArenaPreset(int presetIndex) {
+EMSCRIPTEN_KEEPALIVE void physics_setArenaPreset(int presetIndex) {
     g_arenaPreset = presetIndex;
     if (g_arena) {
         MutatorConfig mc = g_arena->GetMutatorConfig();
@@ -2807,14 +2958,15 @@ void physics_setArenaPreset(int presetIndex) {
             mc.useThrowbackGoalVolume = false;
         }
         g_arena->SetMutatorConfig(mc);
+        applyArenaMutatorSideEffects();
     }
 }
 
-int physics_getArenaPreset() {
+EMSCRIPTEN_KEEPALIVE int physics_getArenaPreset() {
     return g_arenaPreset;
 }
 
-void physics_setGoalVolumeBox(int enabled, float halfWidthX, float minY, float maxY, float maxZ) {
+EMSCRIPTEN_KEEPALIVE void physics_setGoalVolumeBox(int enabled, float halfWidthX, float minY, float maxY, float maxZ) {
     if (!g_arena) return;
     MutatorConfig mc = g_arena->GetMutatorConfig();
     mc.useThrowbackGoalVolume = (enabled != 0);
@@ -2823,9 +2975,10 @@ void physics_setGoalVolumeBox(int enabled, float halfWidthX, float minY, float m
     if (maxY > 0.0f) mc.goalVolumeMaxY = maxY;
     if (maxZ > 0.0f) mc.goalVolumeMaxZ = maxZ;
     g_arena->SetMutatorConfig(mc);
+    applyArenaMutatorSideEffects();
 }
 
-int physics_setCarMaxFlipCount(int carIndex, int maxFlipCount) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarMaxFlipCount(int carIndex, int maxFlipCount) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     g_carBoostSettings[carIndex].maxFlipCount = maxFlipCount;
     if (g_arena && g_cars[carIndex]) {
@@ -2838,12 +2991,12 @@ int physics_setCarMaxFlipCount(int carIndex, int maxFlipCount) {
     return 1;
 }
 
-int physics_getCarMaxFlipCount(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarMaxFlipCount(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 1;
     return g_carBoostSettings[carIndex].maxFlipCount;
 }
 
-int physics_setCarFlipTimerMode(int carIndex, int mode) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarFlipTimerMode(int carIndex, int mode) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     g_carBoostSettings[carIndex].flipTimerMode = static_cast<uint8_t>(mode != 0 ? 1 : 0);
     if (g_arena && g_cars[carIndex]) {
@@ -2852,30 +3005,30 @@ int physics_setCarFlipTimerMode(int carIndex, int mode) {
     return 1;
 }
 
-int physics_getCarFlipTimerMode(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarFlipTimerMode(int carIndex) {
     if (carIndex < 0 || carIndex >= MAX_ARENA_CARS) return 0;
     return static_cast<int>(g_carBoostSettings[carIndex].flipTimerMode);
 }
 
-int physics_setCarDemoSpawnSelection(int carIndex, int slotIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_setCarDemoSpawnSelection(int carIndex, int slotIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
     g_cars[carIndex]->_internalState.demoSpawnSelection = static_cast<int8_t>(std::clamp(slotIndex, -1, 3));
     syncStateBuffer();
     return 1;
 }
 
-int physics_getCarDemoSpawnSelection(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarDemoSpawnSelection(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return -1;
     return static_cast<int>(g_cars[carIndex]->_internalState.demoSpawnSelection);
 }
 
-float physics_getCarDemoRespawnTimer(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarDemoRespawnTimer(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
     const CarState& cs = g_cars[carIndex]->_internalState;
     return cs.isDemoed ? cs.demoRespawnTimer : 0.0f;
 }
 
-int physics_getCarFlipsRemaining(int carIndex) {
+EMSCRIPTEN_KEEPALIVE int physics_getCarFlipsRemaining(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0;
     const CarState& cs = g_cars[carIndex]->_internalState;
     if (cs.isDemoed) return 0;
@@ -2883,7 +3036,7 @@ int physics_getCarFlipsRemaining(int carIndex) {
     return cs.flipsRemaining;
 }
 
-float physics_getCarFlipWindowTimer(int carIndex) {
+EMSCRIPTEN_KEEPALIVE float physics_getCarFlipWindowTimer(int carIndex) {
     if (!g_arena || carIndex < 0 || carIndex >= MAX_ARENA_CARS || !g_cars[carIndex]) return 0.0f;
     const CarState& cs = g_cars[carIndex]->_internalState;
     if (cs.isDemoed) return 0.0f;
